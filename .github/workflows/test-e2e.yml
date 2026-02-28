@@ -2,7 +2,23 @@ name: E2E Tests
 
 on:
   push:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'config/**'
+      - 'Dockerfile'
+      - '.github/workflows/test-e2e.yml'
   pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'config/**'
+      - 'Dockerfile'
+      - '.github/workflows/test-e2e.yml'
 
 jobs:
   test-e2e:
@@ -10,10 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Clone the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
