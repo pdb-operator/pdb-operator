@@ -1,0 +1,272 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: alerts
+  labels:
+    app.kubernetes.io/name: pdb-operator
+    app.kubernetes.io/component: observability
+spec:
+  groups:
+    - name: pdb-operator.health
+      interval: 30s
+      rules:
+        - alert: PDBOperatorDown
+          expr: up{job="pdb-operator"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: pdb-operator
+          annotations:
+            summary: "PDB Operator is down"
+            description: "The PDB Operator has been down for more than 1 minute. PDB creation and management is not functioning."
+            runbook_url: "https://pdboperator.io/runbooks/pdb-operator-down"
+
+        - alert: PDBOperatorHighErrorRate
+          expr: rate(pdb_operator_reconciliation_errors_total[5m]) > 0.1
+          for: 2m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High error rate in PDB operator reconciliation"
+            description: "PDB operator reconciliation error rate is {{ $value | humanizePercentage }} (threshold: 10%). Controller: {{ $labels.controller }}, Error type: {{ $labels.error_type }}"
+
+        - alert: PDBOperatorVeryHighErrorRate
+          expr: rate(pdb_operator_reconciliation_errors_total[5m]) > 0.5
+          for: 1m
+          labels:
+            severity: critical
+            component: pdb-operator
+          annotations:
+            summary: "Very high error rate in PDB operator reconciliation"
+            description: "PDB operator reconciliation error rate is {{ $value | humanizePercentage }} (threshold: 50%). Immediate attention required."
+
+    - name: pdb-operator.performance
+      interval: 30s
+      rules:
+        - alert: PDBOperatorHighLatency
+          expr: histogram_quantile(0.95, rate(pdb_operator_reconciliation_duration_seconds_bucket[5m])) > 2.0
+          for: 5m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High reconciliation latency in PDB operator"
+            description: "P95 reconciliation latency is {{ $value }}s (threshold: 2s). Controller: {{ $labels.controller }}"
+
+        - alert: PDBOperatorVeryHighLatency
+          expr: histogram_quantile(0.95, rate(pdb_operator_reconciliation_duration_seconds_bucket[5m])) > 10.0
+          for: 2m
+          labels:
+            severity: critical
+            component: pdb-operator
+          annotations:
+            summary: "Very high reconciliation latency in PDB operator"
+            description: "P95 reconciliation latency is {{ $value }}s (threshold: 10s). This indicates severe performance issues."
+
+        - alert: PDBOperatorLowCacheHitRate
+          expr: pdb_operator_cache_hit_ratio < 0.5
+          for: 10m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "Low cache hit rate in PDB operator"
+            description: "Cache hit rate is {{ $value | humanizePercentage }} (threshold: 50%). Cache type: {{ $labels.cache_type }}. This may impact performance."
+
+    - name: pdb-operator.circuit-breaker
+      interval: 30s
+      rules:
+        - alert: PDBOperatorCircuitBreakerOpen
+          expr: pdb_operator_circuit_breaker_state{state="open"} > 0
+          for: 30s
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "Circuit breaker is open"
+            description: "Circuit breaker for {{ $labels.service }} is open, indicating repeated failures. Service calls are being rejected."
+
+        - alert: PDBOperatorCircuitBreakerHighFailures
+          expr: rate(pdb_operator_circuit_breaker_failures_total[5m]) > 0.2
+          for: 2m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High circuit breaker failure rate"
+            description: "Circuit breaker failure rate is {{ $value }}/sec for {{ $labels.service }}. This may indicate downstream service issues."
+
+    - name: pdb-operator.policies
+      interval: 60s
+      rules:
+        - alert: PDBOperatorLowCompliance
+          expr: (sum(pdb_operator_compliance_status{status="compliant"}) / sum(pdb_operator_compliance_status)) < 0.9
+          for: 5m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "Low PDB compliance rate"
+            description: "PDB compliance rate is {{ $value | humanizePercentage }} (threshold: 90%). Namespace: {{ $labels.namespace }}"
+
+        - alert: PDBOperatorVeryLowCompliance
+          expr: (sum(pdb_operator_compliance_status{status="compliant"}) / sum(pdb_operator_compliance_status)) < 0.7
+          for: 2m
+          labels:
+            severity: critical
+            component: pdb-operator
+          annotations:
+            summary: "Very low PDB compliance rate"
+            description: "PDB compliance rate is {{ $value | humanizePercentage }} (threshold: 70%). This indicates widespread policy violations."
+
+        - alert: PDBOperatorHighOverrideAttempts
+          expr: rate(pdb_operator_override_attempts_total[10m]) > 0.5
+          for: 5m
+          labels:
+            severity: info
+            component: pdb-operator
+          annotations:
+            summary: "High rate of policy override attempts"
+            description: "Override attempt rate is {{ $value }}/sec. This may indicate policy misconfiguration or resistance."
+
+    - name: pdb-operator.workqueue
+      interval: 30s
+      rules:
+        - alert: PDBOperatorHighWorkqueueDepth
+          expr: pdb_operator_workqueue_depth > 100
+          for: 5m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High workqueue depth"
+            description: "Workqueue depth is {{ $value }} items for controller {{ $labels.controller }}. This indicates processing lag."
+
+        - alert: PDBOperatorVeryHighWorkqueueDepth
+          expr: pdb_operator_workqueue_depth > 500
+          for: 2m
+          labels:
+            severity: critical
+            component: pdb-operator
+          annotations:
+            summary: "Very high workqueue depth"
+            description: "Workqueue depth is {{ $value }} items for controller {{ $labels.controller }}. This indicates severe processing delays."
+
+    - name: pdb-operator.resources
+      interval: 60s
+      rules:
+        - alert: PDBOperatorHighMemoryUsage
+          expr: (process_resident_memory_bytes{job="pdb-operator"} / 1024 / 1024) > 500
+          for: 5m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High memory usage"
+            description: "Memory usage is {{ $value }}MB (threshold: 500MB). Consider investigating memory leaks or increasing limits."
+
+        - alert: PDBOperatorVeryHighMemoryUsage
+          expr: (process_resident_memory_bytes{job="pdb-operator"} / 1024 / 1024) > 1000
+          for: 2m
+          labels:
+            severity: critical
+            component: pdb-operator
+          annotations:
+            summary: "Very high memory usage"
+            description: "Memory usage is {{ $value }}MB (threshold: 1000MB). Risk of OOM kill."
+
+        - alert: PDBOperatorHighCPUUsage
+          expr: rate(process_cpu_seconds_total{job="pdb-operator"}[5m]) * 100 > 80
+          for: 10m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High CPU usage"
+            description: "CPU usage is {{ $value }}% (threshold: 80%). This may indicate performance issues or high load."
+
+    - name: pdb-operator.business-logic
+      interval: 60s
+      rules:
+        - alert: PDBOperatorNoPDBsCreated
+          expr: increase(pdb_operator_pdbs_created_total[1h]) == 0 and on() (sum(pdb_operator_deployments_managed) > 0)
+          for: 30m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "No PDBs created recently"
+            description: "No PDBs have been created in the last hour despite having managed deployments. This may indicate processing issues."
+
+        - alert: PDBOperatorManyUnprotectedDeployments
+          expr: sum(pdb_operator_deployments_managed) - sum(pdb_operator_pdbs_created_total) > 50
+          for: 15m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "Many deployments without PDBs"
+            description: "{{ $value }} deployments are managed but don't have PDBs. This may indicate policy issues or processing delays."
+
+    - name: pdb-operator.retry
+      interval: 30s
+      rules:
+        - alert: PDBOperatorRetryExhausted
+          expr: rate(pdb_operator_retry_exhausted_total[5m]) > 0.1
+          for: 2m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High retry exhaustion rate"
+            description: "Operations are exhausting retries at {{ $value }}/sec. Operation: {{ $labels.operation }}, Error type: {{ $labels.error_type }}"
+
+        - alert: PDBOperatorHighRetryRate
+          expr: rate(pdb_operator_retry_attempts_total{attempt!="1"}[5m]) > 1
+          for: 5m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "High retry attempt rate"
+            description: "Operations requiring multiple retries at {{ $value }}/sec. This may indicate transient API server issues."
+
+    - name: pdb-operator.webhook
+      interval: 60s
+      rules:
+        - alert: PDBOperatorWebhookDisabled
+          expr: pdb_operator_webhook_status{status!="enabled"} == 1
+          for: 5m
+          labels:
+            severity: info
+            component: pdb-operator
+          annotations:
+            summary: "Webhook validation is not enabled"
+            description: "Webhook status: {{ $labels.status }}, Reason: {{ $labels.reason }}. PDBPolicy resources are not being validated."
+
+    - name: pdb-operator.policy-conflicts
+      interval: 60s
+      rules:
+        - alert: PDBOperatorFrequentPolicyConflicts
+          expr: rate(pdb_operator_policy_evaluations_total{result="conflict"}[10m]) > 0.1
+          for: 10m
+          labels:
+            severity: info
+            component: pdb-operator
+          annotations:
+            summary: "Frequent multi-policy matches detected"
+            description: "Multiple policies matching deployments at {{ $value }}/sec in namespace {{ $labels.namespace }}. Consider reviewing policy selectors."
+
+    - name: pdb-operator.maintenance
+      interval: 300s
+      rules:
+        - alert: PDBOperatorRestartLoop
+          expr: increase(kube_pod_container_status_restarts_total{container="manager", namespace="pdb-operator-system"}[1h]) > 5
+          for: 10m
+          labels:
+            severity: warning
+            component: pdb-operator
+          annotations:
+            summary: "Potential restart loop detected"
+            description: "The PDB operator appears to be restarting frequently. Check pod events and logs."

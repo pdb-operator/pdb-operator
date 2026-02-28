@@ -1,0 +1,24 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: pdbpolicy-mutating-webhook-configuration
+  annotations:
+    cert-manager.io/inject-ca-from: pdb-operator-system/pdb-operator-serving-cert
+webhooks:
+- name: pdbpolicy.availability.pdboperator.io
+  rules:
+  - apiGroups: ["availability.pdboperator.io"]
+    apiVersions: ["v1alpha1"]
+    operations: ["CREATE", "UPDATE"]
+    resources: ["pdbpolicies"]
+    scope: "Namespaced"
+  clientConfig:
+    service:
+      namespace: system
+      name: webhook-service
+      path: /mutate-availability-pdboperator-io-v1alpha1-pdbpolicy
+      port: 443
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  timeoutSeconds: 10
+  failurePolicy: Fail

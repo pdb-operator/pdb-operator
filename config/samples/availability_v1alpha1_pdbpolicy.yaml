@@ -1,0 +1,62 @@
+apiVersion: availability.pdboperator.io/v1alpha1
+kind: PDBPolicy
+metadata:
+  name: core-workloads
+  namespace: default
+  labels:
+    pdboperator.io/policy-type: workload
+spec:
+  availabilityClass: high-availability
+  workloadSelector:
+    workloadFunctions:
+      - core
+    matchLabels:
+      tier: core
+  maintenanceWindows:
+    - start: "02:00"
+      end: "04:00"
+      timezone: "UTC"
+      daysOfWeek: [0, 6]  # Sunday and Saturday
+  priority: 10
+---
+apiVersion: availability.pdboperator.io/v1alpha1
+kind: PDBPolicy
+metadata:
+  name: security-workloads
+  namespace: default
+  labels:
+    pdboperator.io/policy-type: workload
+spec:
+  availabilityClass: mission-critical
+  workloadSelector:
+    workloadFunctions:
+      - security
+    matchLabels:
+      tier: security
+  maintenanceWindows:
+    - start: "03:00"
+      end: "05:00"
+      timezone: "UTC"
+      daysOfWeek: [0]  # Sunday only
+  priority: 20
+---
+apiVersion: availability.pdboperator.io/v1alpha1
+kind: PDBPolicy
+metadata:
+  name: management-workloads
+  namespace: default
+  labels:
+    pdboperator.io/policy-type: workload
+spec:
+  availabilityClass: standard
+  workloadSelector:
+    workloadFunctions:
+      - management
+    matchLabels:
+      tier: management
+  maintenanceWindows:
+    - start: "01:00"
+      end: "03:00"
+      timezone: "UTC"
+      daysOfWeek: [0, 1, 2, 3, 4, 5, 6]  # Every day
+  priority: 5

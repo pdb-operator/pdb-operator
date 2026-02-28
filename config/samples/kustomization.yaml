@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- availability_v1alpha1_pdbpolicy.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

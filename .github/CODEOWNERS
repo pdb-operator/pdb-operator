@@ -1,0 +1,32 @@
+# Default owner for everything
+* @nicknikolakakis
+
+# API types and CRD
+/api/ @nicknikolakakis
+
+# Controllers and core logic
+/internal/controller/ @nicknikolakakis
+/internal/cache/ @nicknikolakakis
+/internal/client/ @nicknikolakakis
+
+# Webhooks
+/api/v1alpha1/*webhook* @nicknikolakakis
+
+# Observability
+/internal/metrics/ @nicknikolakakis
+/internal/tracing/ @nicknikolakakis
+/internal/logging/ @nicknikolakakis
+/internal/events/ @nicknikolakakis
+
+# Kubernetes manifests
+/config/ @nicknikolakakis
+
+# CI/CD and build
+/.github/ @nicknikolakakis
+/Makefile @nicknikolakakis
+/Dockerfile @nicknikolakakis
+
+# Governance
+/SECURITY.md @nicknikolakakis
+/GOVERNANCE.md @nicknikolakakis
+/MAINTAINERS.md @nicknikolakakis

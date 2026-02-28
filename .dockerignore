@@ -1,0 +1,18 @@
+# Build artifacts
+bin/
+cover.out
+
+# Version control
+.git/
+
+# CI/CD and docs (not needed in build context)
+.github/
+.devcontainer/
+config/
+hack/
+test/
+
+# Secrets that could exist inside copied directories
+**/.env
+**/*.key
+**/*.pem
