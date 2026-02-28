@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	k8sevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -79,7 +79,7 @@ func removeString(slice []string, item string) []string {
 type PDBPolicyReconciler struct {
 	client.Client
 	Scheme      *runtime.Scheme
-	Recorder    record.EventRecorder
+	Recorder    k8sevents.EventRecorder
 	Events      *events.EventRecorder
 	PolicyCache *cache.PolicyCache
 }
@@ -740,7 +740,7 @@ func (r *PDBPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Create event recorder if not already set
 	if r.Recorder == nil && mgr != nil {
-		r.Recorder = mgr.GetEventRecorderFor("pdbpolicy-controller")
+		r.Recorder = mgr.GetEventRecorder("pdbpolicy-controller")
 	}
 	if r.Events == nil && r.Recorder != nil {
 		r.Events = events.NewEventRecorder(r.Recorder)

@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	k8sevents "k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -64,7 +64,7 @@ func CreateTestReconcilers(objects ...client.Object) *TestReconcilers {
 		Build()
 
 	// Create a fake event recorder
-	fakeRecorder := record.NewFakeRecorder(100)
+	fakeRecorder := k8sevents.NewFakeRecorder(100)
 	eventRecorder := events.NewEventRecorder(fakeRecorder)
 
 	return &TestReconcilers{
@@ -163,7 +163,7 @@ func CleanupTestNamespace(ctx context.Context, namespace string) error {
 }
 
 // AssertEventRecorded checks if a specific event was recorded
-func AssertEventRecorded(t *testing.T, recorder *record.FakeRecorder, expectedReason string) {
+func AssertEventRecorded(t *testing.T, recorder *k8sevents.FakeRecorder, expectedReason string) {
 	t.Helper()
 
 	select {

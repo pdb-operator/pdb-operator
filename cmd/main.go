@@ -298,7 +298,7 @@ func main() {
 	setupLog.Info("Adaptive circuit breaker initialized")
 
 	// Create event recorder
-	eventRecorder := events.NewEventRecorder(mgr.GetEventRecorderFor("pdb-operator"))
+	eventRecorder := events.NewEventRecorder(mgr.GetEventRecorder("pdb-operator"))
 
 	// Create shared controller configuration
 	sharedConfig := &pdbcontroller.SharedConfig{
@@ -310,7 +310,7 @@ func main() {
 	if err := (&pdbcontroller.PDBPolicyReconciler{
 		Client:      circuitBreakerClient,
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("pdbpolicy-controller"),
+		Recorder:    mgr.GetEventRecorder("pdbpolicy-controller"),
 		Events:      eventRecorder,
 		PolicyCache: policyCache,
 	}).SetupWithManager(mgr); err != nil {
@@ -322,7 +322,7 @@ func main() {
 	if err := (&pdbcontroller.DeploymentReconciler{
 		Client:      circuitBreakerClient,
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("deployment-controller"),
+		Recorder:    mgr.GetEventRecorder("deployment-controller"),
 		Events:      eventRecorder,
 		PolicyCache: policyCache,
 		Config:      sharedConfig,

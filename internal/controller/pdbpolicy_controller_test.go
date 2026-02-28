@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/record"
+	k8sevents "k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -81,7 +81,7 @@ func TestPDBPolicyReconciler(t *testing.T) {
 	// Create test reconcilers
 	tr := controller.CreateTestReconcilers(deploy, policy)
 	reconciler := tr.PDBPolicyReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	// Test reconciliation
 	req := reconcile.Request{
@@ -143,7 +143,8 @@ func TestPDBPolicyReconciler_MultipleComponents(t *testing.T) {
 		},
 	}
 
-	objects := []client.Object{policy}
+	objects := make([]client.Object, 0, 1+len(deployments))
+	objects = append(objects, policy)
 	for _, deploy := range deployments {
 		objects = append(objects, deploy)
 	}
@@ -380,7 +381,7 @@ func TestPDBPolicyReconciler_PolicyDeletion(t *testing.T) {
 
 	tr := controller.CreateTestReconcilers(deploy, policy)
 	reconciler := tr.PDBPolicyReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	// Reconcile
 	req := reconcile.Request{

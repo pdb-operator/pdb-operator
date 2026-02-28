@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/record"
+	k8sevents "k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	pdbv1alpha1 "github.com/pdb-operator/pdb-operator/api/v1alpha1"
@@ -57,7 +57,7 @@ func TestDeploymentReconciler_AnnotationBasedPDB(t *testing.T) {
 
 	tr := CreateTestReconcilers(deployment)
 	reconciler := tr.DeploymentReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	// Test reconciliation
 	req := reconcile.Request{
@@ -240,7 +240,7 @@ func TestDeploymentReconciler_SingleReplicaDeployment(t *testing.T) {
 
 	tr := CreateTestReconcilers(deployment)
 	reconciler := tr.DeploymentReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -400,7 +400,7 @@ func TestDeploymentReconciler_DeletionWithCleanup(t *testing.T) {
 
 	tr := CreateTestReconcilers(deployment, pdb)
 	reconciler := tr.DeploymentReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -499,7 +499,7 @@ func TestDeploymentReconciler_UpdatePDB(t *testing.T) {
 
 	tr := CreateTestReconcilers(deployment, existingPDB)
 	reconciler := tr.DeploymentReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	// Add finalizer first
 	deployment.Finalizers = []string{FinalizerPDBCleanup}
@@ -890,7 +890,7 @@ func TestDeploymentReconciler_InvalidAvailabilityClass(t *testing.T) {
 
 	tr := CreateTestReconcilers(deployment)
 	reconciler := tr.DeploymentReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -1031,7 +1031,7 @@ func TestDeploymentReconciler_NoAnnotationsNoPolicy(t *testing.T) {
 
 	tr := CreateTestReconcilers(deployment)
 	reconciler := tr.DeploymentReconciler
-	fakeRecorder := reconciler.Recorder.(*record.FakeRecorder)
+	fakeRecorder := reconciler.Recorder.(*k8sevents.FakeRecorder)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{

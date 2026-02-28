@@ -17,9 +17,11 @@ limitations under the License.
 package events
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	k8sevents "k8s.io/client-go/tools/events"
 )
 
 const (
@@ -53,67 +55,75 @@ const (
 	ReasonComplianceLost     = "ComplianceLost"
 )
 
-// EventRecorder wraps the Kubernetes event recorder with domain-specific methods
+// EventRecorder wraps k8sevents.EventRecorder with domain-specific, nil-safe methods.
+// All methods use safeEventf internally to handle nil objects and namespace deletion edge cases.
 type EventRecorder struct {
-	recorder record.EventRecorder
+	recorder k8sevents.EventRecorder
 }
 
 // NewEventRecorder creates a new event recorder
-func NewEventRecorder(recorder record.EventRecorder) *EventRecorder {
+func NewEventRecorder(recorder k8sevents.EventRecorder) *EventRecorder {
 	return &EventRecorder{recorder: recorder}
+}
+
+// safeEventf records an event, recovering from panics (e.g., namespace deletion).
+func (e *EventRecorder) safeEventf(obj runtime.Object, eventType, reason, msgFmt string, args ...any) {
+	if e == nil || e.recorder == nil || obj == nil {
+		return
+	}
+	defer func() { recover() }() //nolint:errcheck // panic recovery for namespace deletion edge cases
+	e.recorder.Eventf(obj, nil, eventType, reason, reason, msgFmt, args...)
 }
 
 // PDB Lifecycle Events
 
 func (e *EventRecorder) PDBCreated(obj runtime.Object, deployment, pdbName, availabilityClass string, minAvailable string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonPDBCreated,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonPDBCreated,
 		"Created PodDisruptionBudget %s for deployment %s (class: %s, minAvailable: %s)",
 		pdbName, deployment, availabilityClass, minAvailable)
 }
 
 func (e *EventRecorder) PDBUpdated(obj runtime.Object, deployment, pdbName, oldMinAvailable, newMinAvailable string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonPDBUpdated,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonPDBUpdated,
 		"Updated PodDisruptionBudget %s for deployment %s (minAvailable: %s -> %s)",
 		pdbName, deployment, oldMinAvailable, newMinAvailable)
 }
 
 func (e *EventRecorder) PDBDeleted(obj runtime.Object, deployment, pdbName, reason string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonPDBDeleted,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonPDBDeleted,
 		"Deleted PodDisruptionBudget %s for deployment %s (reason: %s)",
 		pdbName, deployment, reason)
 }
 
 func (e *EventRecorder) PDBCreationFailed(obj runtime.Object, deployment string, err error) {
-	if obj != nil {
-		e.recorder.Eventf(obj, corev1.EventTypeWarning, ReasonPDBCreationFailed,
-			"Failed to create PodDisruptionBudget for deployment %s: %v", deployment, err)
-	}
+	e.safeEventf(obj, corev1.EventTypeWarning, ReasonPDBCreationFailed,
+		"Failed to create PodDisruptionBudget for deployment %s: %v", deployment, err)
 }
 
 func (e *EventRecorder) PDBUpdateFailed(obj runtime.Object, deployment string, err error) {
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, ReasonPDBUpdateFailed,
+	e.safeEventf(obj, corev1.EventTypeWarning, ReasonPDBUpdateFailed,
 		"Failed to update PodDisruptionBudget for deployment %s: %v", deployment, err)
 }
 
 func (e *EventRecorder) PDBDeletionFailed(obj runtime.Object, deployment string, err error) {
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, ReasonPDBDeletionFailed,
+	e.safeEventf(obj, corev1.EventTypeWarning, ReasonPDBDeletionFailed,
 		"Failed to delete PodDisruptionBudget for deployment %s: %v", deployment, err)
 }
 
 // Configuration Events
 
 func (e *EventRecorder) InvalidConfiguration(obj runtime.Object, reason string) {
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, ReasonInvalidConfig,
+	e.safeEventf(obj, corev1.EventTypeWarning, ReasonInvalidConfig,
 		"Invalid configuration: %s", reason)
 }
 
 func (e *EventRecorder) ConfigurationError(obj runtime.Object, configType string, err error) {
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, ReasonConfigurationError,
+	e.safeEventf(obj, corev1.EventTypeWarning, ReasonConfigurationError,
 		"Configuration error for %s: %v", configType, err)
 }
 
 func (e *EventRecorder) MaintenanceWindowActive(obj runtime.Object, deployment, window string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonMaintenanceWindow,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonMaintenanceWindow,
 		"Deployment %s is in maintenance window (%s), PDB enforcement suspended",
 		deployment, window)
 }
@@ -121,94 +131,81 @@ func (e *EventRecorder) MaintenanceWindowActive(obj runtime.Object, deployment, 
 // Policy Events
 
 func (e *EventRecorder) PolicyApplied(obj runtime.Object, policyName string, workloadsCount int) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonPolicyApplied,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonPolicyApplied,
 		"PDBPolicy %s applied to %d workloads", policyName, workloadsCount)
 }
 
 func (e *EventRecorder) PolicyRemoved(obj runtime.Object, policyName string, workloadsCount int) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonPolicyRemoved,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonPolicyRemoved,
 		"PDBPolicy %s removed from %d workloads", policyName, workloadsCount)
 }
 
 func (e *EventRecorder) PolicyUpdated(obj runtime.Object, policyName string, changes string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonPolicyUpdated,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonPolicyUpdated,
 		"PDBPolicy %s updated: %s", policyName, changes)
 }
 
 func (e *EventRecorder) PolicyValidated(obj runtime.Object, policyName string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonPolicyValidated,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonPolicyValidated,
 		"PDBPolicy %s validated successfully", policyName)
 }
 
 func (e *EventRecorder) PolicyInvalid(obj runtime.Object, policyName string, reason string) {
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, ReasonPolicyInvalid,
+	e.safeEventf(obj, corev1.EventTypeWarning, ReasonPolicyInvalid,
 		"PDBPolicy %s validation failed: %s", policyName, reason)
 }
 
 // Deployment Events
 
 func (e *EventRecorder) DeploymentManaged(obj runtime.Object, deployment string, source string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonDeploymentManaged,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonDeploymentManaged,
 		"Deployment %s is now managed for PDB (source: %s)", deployment, source)
 }
 
 func (e *EventRecorder) DeploymentUnmanaged(obj runtime.Object, deployment string, reason string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonDeploymentUnmanaged,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonDeploymentUnmanaged,
 		"Deployment %s is no longer managed for PDB: %s", deployment, reason)
 }
 
 func (e *EventRecorder) DeploymentSkipped(obj runtime.Object, deployment string, reason string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonDeploymentSkipped,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonDeploymentSkipped,
 		"Deployment %s skipped for PDB management: %s", deployment, reason)
 }
 
 // Compliance Events
 
 func (e *EventRecorder) ComplianceAchieved(obj runtime.Object, deployment string, details string) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, ReasonComplianceAchieved,
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonComplianceAchieved,
 		"Deployment %s achieved PDB compliance: %s", deployment, details)
 }
 
 func (e *EventRecorder) ComplianceLost(obj runtime.Object, deployment string, reason string) {
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, ReasonComplianceLost,
+	e.safeEventf(obj, corev1.EventTypeWarning, ReasonComplianceLost,
 		"Deployment %s lost PDB compliance: %s", deployment, reason)
 }
 
 // Generic event helpers
 
 func (e *EventRecorder) Info(obj runtime.Object, reason, message string) {
-	e.recorder.Event(obj, corev1.EventTypeNormal, reason, message)
+	e.safeEventf(obj, corev1.EventTypeNormal, reason, "%s", message)
 }
 
 func (e *EventRecorder) Warn(obj runtime.Object, reason, message string) {
-	e.recorder.Event(obj, corev1.EventTypeWarning, reason, message)
+	e.safeEventf(obj, corev1.EventTypeWarning, reason, "%s", message)
 }
 
 func (e *EventRecorder) Error(obj runtime.Object, reason string, err error) {
-	if obj == nil {
-		return
-	}
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, reason, "Error: %v", err)
+	e.safeEventf(obj, corev1.EventTypeWarning, reason, "Error: %v", err)
 }
 
 func (e *EventRecorder) SafeEventf(obj runtime.Object, eventType string, reason, format string, args ...interface{}) {
-	if obj == nil {
-		return
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			_ = r
-		}
-	}()
-
-	e.recorder.Eventf(obj, eventType, reason, format, args...)
+	e.safeEventf(obj, eventType, reason, fmt.Sprintf(format, args...))
 }
 
 func (e *EventRecorder) Infof(obj runtime.Object, reason, format string, args ...interface{}) {
-	e.recorder.Eventf(obj, corev1.EventTypeNormal, reason, format, args...)
+	e.safeEventf(obj, corev1.EventTypeNormal, reason, format, args...)
 }
 
 func (e *EventRecorder) Warnf(obj runtime.Object, reason, format string, args ...interface{}) {
-	e.recorder.Eventf(obj, corev1.EventTypeWarning, reason, format, args...)
+	e.safeEventf(obj, corev1.EventTypeWarning, reason, format, args...)
 }

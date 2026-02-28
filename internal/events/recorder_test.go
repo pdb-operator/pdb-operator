@@ -23,14 +23,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	k8sevents "k8s.io/client-go/tools/events"
 
 	pdbv1alpha1 "github.com/pdb-operator/pdb-operator/api/v1alpha1"
 )
 
 func TestEventRecorder_PDBLifecycleEvents(t *testing.T) {
 	// Create fake recorder
-	fakeRecorder := record.NewFakeRecorder(10)
+	fakeRecorder := k8sevents.NewFakeRecorder(10)
 	eventRecorder := NewEventRecorder(fakeRecorder)
 
 	// Create test deployment
@@ -104,7 +104,7 @@ func TestEventRecorder_PDBLifecycleEvents(t *testing.T) {
 
 func TestEventRecorder_PolicyEvents(t *testing.T) {
 	// Create fake recorder
-	fakeRecorder := record.NewFakeRecorder(10)
+	fakeRecorder := k8sevents.NewFakeRecorder(10)
 	eventRecorder := NewEventRecorder(fakeRecorder)
 
 	// Create test policy
@@ -168,7 +168,7 @@ func TestEventRecorder_PolicyEvents(t *testing.T) {
 
 func TestEventRecorder_DeploymentEvents(t *testing.T) {
 	// Create fake recorder
-	fakeRecorder := record.NewFakeRecorder(10)
+	fakeRecorder := k8sevents.NewFakeRecorder(10)
 	eventRecorder := NewEventRecorder(fakeRecorder)
 
 	// Create test deployment
@@ -225,7 +225,7 @@ func TestEventRecorder_DeploymentEvents(t *testing.T) {
 
 func TestEventRecorder_ConfigurationEvents(t *testing.T) {
 	// Create fake recorder
-	fakeRecorder := record.NewFakeRecorder(10)
+	fakeRecorder := k8sevents.NewFakeRecorder(10)
 	eventRecorder := NewEventRecorder(fakeRecorder)
 
 	// Create test deployment
@@ -291,7 +291,7 @@ func TestEventRecorder_ConfigurationEvents(t *testing.T) {
 
 func TestEventRecorder_ComplianceEvents(t *testing.T) {
 	// Create fake recorder
-	fakeRecorder := record.NewFakeRecorder(10)
+	fakeRecorder := k8sevents.NewFakeRecorder(10)
 	eventRecorder := NewEventRecorder(fakeRecorder)
 
 	// Create test deployment
@@ -349,7 +349,7 @@ func TestEventRecorder_ComplianceEvents(t *testing.T) {
 
 func TestEventRecorder_GenericEvents(t *testing.T) {
 	// Create fake recorder
-	fakeRecorder := record.NewFakeRecorder(10)
+	fakeRecorder := k8sevents.NewFakeRecorder(10)
 	eventRecorder := NewEventRecorder(fakeRecorder)
 
 	// Create test object

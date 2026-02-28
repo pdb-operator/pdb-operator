@@ -132,8 +132,9 @@ func AuditPDBCreation(ctx context.Context, namespace, deployment, pdbName string
 		entry.CorrelationID = GetCorrelationID(ctx)
 	}
 
-	// Build structured fields
-	fields := []interface{}{
+	// Build structured fields (18 base + 2 per metadata entry)
+	fields := make([]interface{}, 0, 18+2*len(entry.Metadata))
+	fields = append(fields,
 		"audit", true,
 		"audit.timestamp", entry.Timestamp.Format(time.RFC3339),
 		"audit.action", string(entry.Action),
@@ -143,7 +144,7 @@ func AuditPDBCreation(ctx context.Context, namespace, deployment, pdbName string
 		"audit.name", entry.Name,
 		"audit.result", string(entry.Result),
 		"audit.correlationId", entry.CorrelationID,
-	}
+	)
 
 	// Add metadata fields
 	for k, v := range entry.Metadata {
@@ -186,8 +187,9 @@ func AuditPolicyApplication(ctx context.Context, policyNamespace, policyName str
 		entry.CorrelationID = GetCorrelationID(ctx)
 	}
 
-	// Build structured fields
-	fields := []interface{}{
+	// Build structured fields (18 base + 2 per metadata entry)
+	fields := make([]interface{}, 0, 18+2*len(entry.Metadata))
+	fields = append(fields,
 		"audit", true,
 		"audit.timestamp", entry.Timestamp.Format(time.RFC3339),
 		"audit.action", string(entry.Action),
@@ -197,7 +199,7 @@ func AuditPolicyApplication(ctx context.Context, policyNamespace, policyName str
 		"audit.name", entry.Name,
 		"audit.result", string(entry.Result),
 		"audit.correlationId", entry.CorrelationID,
-	}
+	)
 
 	// Add metadata fields
 	for k, v := range entry.Metadata {
@@ -245,8 +247,9 @@ func AuditReconciliation(ctx context.Context, controller, namespace, name string
 		entry.CorrelationID = GetCorrelationID(ctx)
 	}
 
-	// Build structured fields
-	fields := []interface{}{
+	// Build structured fields (18 base + 2 per metadata entry)
+	fields := make([]interface{}, 0, 18+2*len(entry.Metadata))
+	fields = append(fields,
 		"audit", true,
 		"audit.timestamp", entry.Timestamp.Format(time.RFC3339),
 		"audit.action", string(entry.Action),
@@ -256,7 +259,7 @@ func AuditReconciliation(ctx context.Context, controller, namespace, name string
 		"audit.name", entry.Name,
 		"audit.result", string(entry.Result),
 		"audit.correlationId", entry.CorrelationID,
-	}
+	)
 
 	// Add metadata fields
 	for k, v := range entry.Metadata {

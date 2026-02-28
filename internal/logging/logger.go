@@ -181,8 +181,9 @@ func (l *Logger) Audit(action, resource, resourceType, namespace, name string, r
 	// Create audit logger
 	auditLogger := l.WithName("audit")
 
-	// Build structured fields
-	fields := []interface{}{
+	// Build structured fields (18 base + 2 per metadata entry)
+	fields := make([]interface{}, 0, 18+2*len(entry.Metadata))
+	fields = append(fields,
 		"audit", true,
 		"audit.timestamp", entry.Timestamp.Format(time.RFC3339),
 		"audit.action", string(entry.Action),
@@ -192,7 +193,7 @@ func (l *Logger) Audit(action, resource, resourceType, namespace, name string, r
 		"audit.name", entry.Name,
 		"audit.result", string(entry.Result),
 		"audit.correlationId", GetCorrelationID(l.ctx),
-	}
+	)
 
 	// Add metadata fields
 	for k, v := range entry.Metadata {

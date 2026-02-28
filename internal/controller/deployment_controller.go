@@ -35,7 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/tools/record"
+	k8sevents "k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -97,7 +97,7 @@ type SharedConfig struct {
 type DeploymentReconciler struct {
 	client.Client
 	Scheme      *runtime.Scheme
-	Recorder    record.EventRecorder
+	Recorder    k8sevents.EventRecorder
 	Events      *events.EventRecorder
 	PolicyCache *cache.PolicyCache
 	Config      *SharedConfig
@@ -1901,7 +1901,7 @@ func (r *DeploymentReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, opt
 
 	// Create event recorder if not already set
 	if r.Recorder == nil && mgr != nil {
-		r.Recorder = mgr.GetEventRecorderFor("deployment-pdb-controller")
+		r.Recorder = mgr.GetEventRecorder("deployment-pdb-controller")
 	}
 	if r.Events == nil && r.Recorder != nil {
 		r.Events = events.NewEventRecorder(r.Recorder)
