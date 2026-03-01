@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-03-01
+
 ### Added
 - PDBPolicy CRD (`availability.pdboperator.io/v1alpha1`) with availability classes, enforcement modes, and maintenance windows
 - PDBPolicyController for policy reconciliation and status management
@@ -37,10 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Technical Details
 - Built with operator-sdk v1.42.0 and controller-runtime v0.23.1
 - Go 1.26.0 with latest dependency versions
-- Kubernetes client v0.35.1 compatibility
+- Kubernetes client v0.35.2 compatibility
 - gobreaker v2 with generics for circuit breaker
 - OpenTelemetry v1.40.0 SDK (OTLP-only, no deprecated Jaeger exporter)
 - Distroless container base image (`gcr.io/distroless/static:nonroot`)
 - Comprehensive test suite with 71-93% coverage across packages
 
-[Unreleased]: https://github.com/pdb-operator/pdb-operator/commits/main
+[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pdb-operator/pdb-operator/releases/tag/v0.1.0
