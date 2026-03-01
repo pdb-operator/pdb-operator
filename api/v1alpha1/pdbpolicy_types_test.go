@@ -305,7 +305,7 @@ func TestPDBPolicySpecStructure(t *testing.T) {
 		MinimumClass:               Standard,
 		EnforceMinReplicas:         &enforceTrue,
 		AllowOverride:              &allowOverrideTrue,
-		OverrideRequiresAnnotation: "pdb.example.com/allow-override",
+		OverrideRequiresAnnotation: "pdb.pdboperator.io/allow-override",
 		OverrideRequiresReason:     &overrideRequiresReasonFalse,
 	}
 
@@ -315,7 +315,7 @@ func TestPDBPolicySpecStructure(t *testing.T) {
 	assert.Equal(t, Standard, spec.MinimumClass)
 	assert.True(t, *spec.EnforceMinReplicas)
 	assert.True(t, *spec.AllowOverride)
-	assert.Equal(t, "pdb.example.com/allow-override", spec.OverrideRequiresAnnotation)
+	assert.Equal(t, "pdb.pdboperator.io/allow-override", spec.OverrideRequiresAnnotation)
 	assert.False(t, *spec.OverrideRequiresReason)
 }
 

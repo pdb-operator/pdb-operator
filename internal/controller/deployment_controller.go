@@ -124,6 +124,7 @@ type AvailabilityConfig struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=availability.pdboperator.io,resources=pdbpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile handles Deployment changes and manages corresponding PDBs
 // Reconcile handles Deployment changes and manages corresponding PDBs

@@ -89,6 +89,7 @@ type PDBPolicyReconciler struct {
 // +kubebuilder:rbac:groups=availability.pdboperator.io,resources=pdbpolicies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile handles PDBPolicy changes
