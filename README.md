@@ -20,16 +20,12 @@ Managing PodDisruptionBudgets at scale is painful. Teams forget to create them, 
 
 ## Architecture
 
-```
-PDBPolicy (CRD)              Deployments
-     |                            |
-     v                            v
-PDBPolicy Controller    Deployment Controller
-     |                            |
-     +------- reconcile ----------+
-                  |
-                  v
-        PodDisruptionBudgets
+```mermaid
+graph TD
+    A[PDBPolicy CRD] --> B[PDBPolicy Controller]
+    C[Deployments] --> D[Deployment Controller]
+    B -- reconcile --> E[PodDisruptionBudgets]
+    D -- reconcile --> E
 ```
 
 The operator runs two controllers:

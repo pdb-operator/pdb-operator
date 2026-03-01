@@ -20,7 +20,6 @@ This document outlines the planned development of PDB Operator. Priorities may s
 ## v0.2.0 - StatefulSet and DaemonSet Support
 
 - [ ] Extend PDB management to StatefulSets
-- [ ] Extend PDB management to DaemonSets
 - [ ] Per-workload-type PDB calculation strategies
 
 ## v0.3.0 - Advanced Policy Features
