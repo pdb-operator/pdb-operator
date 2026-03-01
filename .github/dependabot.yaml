@@ -5,9 +5,27 @@ updates:
     schedule:
       interval: monthly
     rebase-strategy: disabled
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
     rebase-strategy: disabled
+    groups:
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      opentelemetry:
+        patterns:
+          - "go.opentelemetry.io/*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+      google:
+        patterns:
+          - "google.golang.org/*"

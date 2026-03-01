@@ -12,7 +12,7 @@ The PDB Operator project takes security seriously. We appreciate your efforts to
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to **nonicked@protonmail.com**.
+Instead, please report them via email to **support@pdboperator.io**.
 
 You should receive a response within 48 hours. If for some reason you do not, please follow up via email to ensure we received your original message.
 

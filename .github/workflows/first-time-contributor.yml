@@ -1,0 +1,33 @@
+name: First-Time Contributor
+
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome first-time contributor
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const creator = context.payload.pull_request.user.login;
+            const { data: pulls } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              per_page: 2,
+            });
+            const isFirstPR = pulls.filter(p => p.user.login === creator).length <= 1;
+            if (isFirstPR) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: `Welcome @${creator}! Thank you for your first contribution to pdb-operator! 🎉\n\nA maintainer will review your PR shortly. Please make sure your commits are signed off (\`git commit -s\`) for the DCO check.`,
+              });
+            }
