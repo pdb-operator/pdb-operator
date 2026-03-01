@@ -269,7 +269,7 @@ show_help() {
     echo "Examples:"
     echo "  $0"
     echo "  $0 --url http://grafana:3000 --user myuser --password mypass"
-    echo "  GRAFANA_URL=https://grafana.example.com $0"
+    echo "  GRAFANA_URL=https://grafana.pdboperator.io $0"
 }
 
 # Parse command line arguments

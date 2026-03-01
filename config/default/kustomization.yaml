@@ -14,7 +14,9 @@ resources:
 - ../manager
 - ../webhook
 - ../certmanager
-- ../prometheus
+# [PROMETHEUS] To enable prometheus monitor, uncomment the following line.
+# Requires Prometheus Operator CRDs (PrometheusRule, ServiceMonitor).
+#- ../prometheus
 # [METRICS] Expose the controller manager metrics service.
 - metrics_service.yaml
 # [NETWORK POLICY] Protect the /metrics endpoint and Webhook Server with NetworkPolicy.
