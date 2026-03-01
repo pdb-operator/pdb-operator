@@ -263,7 +263,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("getting the metrics by checking curl-metrics logs")
 			metricsOutput := getMetricsOutput()
 			Expect(metricsOutput).To(ContainSubstring(
-				"workqueue_adds_total",
+				"certwatcher_read_certificate_total",
 			))
 		})
 
