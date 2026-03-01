@@ -660,7 +660,7 @@ export ENABLE_MCP=true
 export MCP_BIND_ADDRESS=:8090
 ```
 
-For detailed MCP configuration, API reference, and advanced usage, see the [MCP Integration Guide](docs/MCP_INTEGRATION.md).
+<!-- TODO: Add MCP Integration Guide -->
 
 ## Security & RBAC
 
