@@ -1,9 +1,31 @@
 # PDB Operator
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/pdb-operator/pdb-operator)](go.mod)
-[![CI](https://github.com/pdb-operator/pdb-operator/actions/workflows/test.yml/badge.svg)](https://github.com/pdb-operator/pdb-operator/actions/workflows/test.yml)
-[![Lint](https://github.com/pdb-operator/pdb-operator/actions/workflows/lint.yml/badge.svg)](https://github.com/pdb-operator/pdb-operator/actions/workflows/lint.yml)
+<p align="center">
+  <strong>
+    <a href="#quick-start">Getting Started</a>
+    &nbsp;&nbsp;&bull;&nbsp;&nbsp;
+    <a href="CONTRIBUTING.md">Contributing</a>
+    &nbsp;&nbsp;&bull;&nbsp;&nbsp;
+    <a href="https://github.com/pdb-operator/pdb-operator/issues">Get In Touch</a>
+  </strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/pdb-operator/pdb-operator/actions/workflows/test.yml?query=branch%3Amain">
+    <img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/pdb-operator/pdb-operator/test.yml?branch=main&style=for-the-badge&label=tests">
+  </a>
+  <a href="https://goreportcard.com/report/github.com/pdb-operator/pdb-operator">
+    <img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/pdb-operator/pdb-operator?style=for-the-badge">
+  </a>
+  <a href="https://github.com/pdb-operator/pdb-operator/releases">
+    <img alt="Latest Release" src="https://img.shields.io/github/v/release/pdb-operator/pdb-operator?include_prereleases&style=for-the-badge">
+  </a>
+  <a href="LICENSE">
+    <img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge">
+  </a>
+</p>
+
+---
 
 A Kubernetes operator that automates PodDisruptionBudget (PDB) management through policy-driven availability classes. Define your availability requirements declaratively and let the operator create, update, and reconcile PDBs across your cluster.
 
@@ -161,7 +183,7 @@ spec:
 
 ### OpenTelemetry Tracing
 
-Set `OTLP_ENDPOINT` or `JAEGER_ENDPOINT` environment variable to enable distributed tracing via OTLP protocol.
+Set `OTLP_ENDPOINT` environment variable to enable distributed tracing via OTLP/gRPC protocol.
 
 ### Structured Logging
 
