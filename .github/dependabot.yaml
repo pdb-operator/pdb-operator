@@ -6,9 +6,6 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
-      semver-major-days: 30
-      semver-minor-days: 7
-      semver-patch-days: 3
     rebase-strategy: disabled
     groups:
       github-actions:
