@@ -6,7 +6,7 @@
     &nbsp;&nbsp;&bull;&nbsp;&nbsp;
     <a href="CONTRIBUTING.md">Contributing</a>
     &nbsp;&nbsp;&bull;&nbsp;&nbsp;
-    <a href="https://github.com/pdb-operator/pdb-operator/issues">Get In Touch</a>
+    <a href="https://cloud-native.slack.com/channels/pdb-operator">Get In Touch</a>
   </strong>
 </p>
 
@@ -298,6 +298,7 @@ git commit -s -m "feat: add new feature"
 
 ## Community
 
+- [CNCF Slack — #pdb-operator](https://cloud-native.slack.com/channels/pdb-operator)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Governance](GOVERNANCE.md)
 - [Security Policy](SECURITY.md)

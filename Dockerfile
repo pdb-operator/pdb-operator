@@ -1,5 +1,6 @@
 # Build the pdboperator binary
-FROM golang:1.26 AS builder
+# Use BUILDPLATFORM so the builder runs natively (no QEMU emulation)
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -14,7 +15,7 @@ COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 
-# Build a statically linked, stripped binary
+# Cross-compile natively via Go's built-in support (no QEMU needed)
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o pdboperator cmd/main.go
 
