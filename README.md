@@ -46,14 +46,17 @@ Managing PodDisruptionBudgets at scale is painful. Teams forget to create them, 
 graph TD
     A[PDBPolicy CRD] --> B[PDBPolicy Controller]
     C[Deployments] --> D[Deployment Controller]
+    F[StatefulSets] --> G[StatefulSet Controller]
     B -- reconcile --> E[PodDisruptionBudgets]
     D -- reconcile --> E
+    G -- reconcile --> E
 ```
 
-The operator runs two controllers:
+The operator runs three controllers:
 
-- **PDBPolicyController** - Watches `PDBPolicy` resources, finds matching deployments, and updates policy status
+- **PDBPolicyController** - Watches `PDBPolicy` resources, finds matching workloads, and updates policy status
 - **DeploymentController** - Watches `Deployment` resources, resolves the effective policy (considering annotations, enforcement modes, and priority), and creates/updates/deletes PDBs
+- **StatefulSetController** - Watches `StatefulSet` resources with the same policy-driven logic, enabling PDB protection for stateful workloads such as databases and message queues
 
 ## Quick Start
 
@@ -96,9 +99,9 @@ spec:
 
 This policy ensures all `env: production` deployments in the `default` and `production` namespaces get PDBs with 75% minimum availability, enforced strictly (annotations cannot override).
 
-### Annotate Deployments (Optional)
+### Annotate Workloads (Optional)
 
-For `advisory` and `flexible` enforcement modes, deployments can override the policy using annotations:
+For `advisory` and `flexible` enforcement modes, workloads can override the policy using annotations:
 
 ```yaml
 apiVersion: apps/v1
@@ -109,6 +112,19 @@ metadata:
     pdboperator.io/availability-class: "mission-critical"
     pdboperator.io/workload-function: "security"
     pdboperator.io/workload-name: "auth-service"
+```
+
+StatefulSets are supported with the same annotations:
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  annotations:
+    pdboperator.io/availability-class: "high-availability"
+    pdboperator.io/workload-function: "core"
+    pdboperator.io/workload-name: "mysql"
 ```
 
 ## Availability Classes
@@ -145,7 +161,7 @@ spec:
 
 ## Annotations Reference
 
-### Deployment Annotations
+### Workload Annotations
 
 | Annotation | Description |
 |-----------|-------------|
@@ -266,10 +282,10 @@ make undeploy
 
 ### Policy conflicts
 
-When multiple policies match a deployment, the operator uses priority-based resolution. Check which policy was applied:
+When multiple policies match a workload, the operator uses priority-based resolution. Check which policy was applied:
 
 ```sh
-kubectl get deployment <name> -o jsonpath='{.metadata.annotations}'
+kubectl get deployment,statefulset <name> -o jsonpath='{.metadata.annotations}'
 kubectl get events --field-selector involvedObject.name=<name>
 ```
 
