@@ -47,11 +47,12 @@ func CreateFakeClient(objects ...client.Object) client.Client {
 
 // CreateTestReconciler creates a test reconciler with fake client and event recorder
 type TestReconcilers struct {
-	DeploymentReconciler *DeploymentReconciler
-	PDBPolicyReconciler  *PDBPolicyReconciler
-	Client               client.Client
-	Scheme               *runtime.Scheme
-	EventRecorder        *events.EventRecorder
+	DeploymentReconciler  *DeploymentReconciler
+	PDBPolicyReconciler   *PDBPolicyReconciler
+	StatefulSetReconciler *StatefulSetReconciler
+	Client                client.Client
+	Scheme                *runtime.Scheme
+	EventRecorder         *events.EventRecorder
 }
 
 // CreateTestReconcilers creates reconcilers for testing
@@ -82,6 +83,13 @@ func CreateTestReconcilers(objects ...client.Object) *TestReconcilers {
 			Scheme:   scheme,
 			Recorder: fakeRecorder,
 			Events:   eventRecorder,
+		},
+		StatefulSetReconciler: &StatefulSetReconciler{
+			Client:   fakeClient,
+			Scheme:   scheme,
+			Recorder: fakeRecorder,
+			Events:   eventRecorder,
+			tracker:  NewWorkloadStateTracker(),
 		},
 	}
 }
