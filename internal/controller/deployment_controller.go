@@ -1383,6 +1383,7 @@ func (r *DeploymentReconciler) updatePDB(ctx context.Context, pdb *policyv1.PodD
 	}
 
 	// Check if we're exiting maintenance mode
+	//nolint:goconst
 	if pdb.Annotations["pdboperator.io/maintenance-mode"] == "true" {
 		delete(pdb.Annotations, "pdboperator.io/maintenance-mode")
 		delete(pdb.Annotations, "pdboperator.io/maintenance-start")

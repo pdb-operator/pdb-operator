@@ -62,26 +62,29 @@ type WorkloadAccessor interface {
 	KindLower() string
 }
 
-// deploymentWorkload is a thin adapter wrapping appsv1.Deployment.
-type deploymentWorkload struct{ *appsv1.Deployment }
+// deploymentWorkload adapter is prepared for when deployment_controller.go
+// is migrated to use workload.go shared logic.
+// Uncomment when that migration happens.
+//
+// type deploymentWorkload struct{ *appsv1.Deployment }
 
-func (d *deploymentWorkload) GetObject() client.Object           { return d.Deployment }
-func (d *deploymentWorkload) GetName() string                    { return d.Name }
-func (d *deploymentWorkload) GetNamespace() string               { return d.Namespace }
-func (d *deploymentWorkload) GetAnnotations() map[string]string  { return d.Annotations }
-func (d *deploymentWorkload) GetLabels() map[string]string       { return d.Labels }
-func (d *deploymentWorkload) GetGeneration() int64               { return d.Generation }
-func (d *deploymentWorkload) GetSelector() *metav1.LabelSelector { return d.Spec.Selector }
-func (d *deploymentWorkload) GetDeletionTimestamp() *metav1.Time { return d.DeletionTimestamp }
-func (d *deploymentWorkload) DeepCopyObject() client.Object      { return d.Deployment.DeepCopy() }
-func (d *deploymentWorkload) Kind() string                       { return "Deployment" }
-func (d *deploymentWorkload) KindLower() string                  { return "deployment" }
-func (d *deploymentWorkload) GetReplicas() int32 {
-	if d.Spec.Replicas != nil {
-		return *d.Spec.Replicas
-	}
-	return 1
-}
+// func (d *deploymentWorkload) GetObject() client.Object           { return d.Deployment }
+// func (d *deploymentWorkload) GetName() string                    { return d.Name }
+// func (d *deploymentWorkload) GetNamespace() string               { return d.Namespace }
+// func (d *deploymentWorkload) GetAnnotations() map[string]string  { return d.Annotations }
+// func (d *deploymentWorkload) GetLabels() map[string]string       { return d.Labels }
+// func (d *deploymentWorkload) GetGeneration() int64               { return d.Generation }
+// func (d *deploymentWorkload) GetSelector() *metav1.LabelSelector { return d.Spec.Selector }
+// func (d *deploymentWorkload) GetDeletionTimestamp() *metav1.Time { return d.DeletionTimestamp }
+// func (d *deploymentWorkload) DeepCopyObject() client.Object      { return d.Deployment.DeepCopy() }
+// func (d *deploymentWorkload) Kind() string                       { return "Deployment" }
+// func (d *deploymentWorkload) KindLower() string                  { return "deployment" }
+// func (d *deploymentWorkload) GetReplicas() int32 {
+// 	if d.Spec.Replicas != nil {
+// 		return *d.Spec.Replicas
+// 	}
+// 	return 1
+// }
 
 // statefulSetWorkload is a thin adapter wrapping appsv1.StatefulSet.
 type statefulSetWorkload struct{ *appsv1.StatefulSet }
@@ -94,7 +97,7 @@ func (s *statefulSetWorkload) GetLabels() map[string]string       { return s.Lab
 func (s *statefulSetWorkload) GetGeneration() int64               { return s.Generation }
 func (s *statefulSetWorkload) GetSelector() *metav1.LabelSelector { return s.Spec.Selector }
 func (s *statefulSetWorkload) GetDeletionTimestamp() *metav1.Time { return s.DeletionTimestamp }
-func (s *statefulSetWorkload) DeepCopyObject() client.Object      { return s.StatefulSet.DeepCopy() }
+func (s *statefulSetWorkload) DeepCopyObject() client.Object      { return s.DeepCopy() }
 func (s *statefulSetWorkload) Kind() string                       { return "StatefulSet" }
 func (s *statefulSetWorkload) KindLower() string                  { return "statefulset" }
 func (s *statefulSetWorkload) GetReplicas() int32 {
