@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -79,6 +80,16 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("removing the PDBPolicy mutating webhook to avoid connection refused errors")
+		cmd = exec.Command("kubectl", "delete", "mutatingwebhookconfiguration",
+			"pdb-operator-pdbpolicy-mutating-webhook-configuration",
+			"--ignore-not-found")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "validatingwebhookconfiguration",
+			"pdb-operator-pdbpolicy-validating-webhook-configuration",
+			"--ignore-not-found")
+		_, _ = utils.Run(cmd)
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -92,12 +103,18 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
 
+		By("cleaning up test StatefulSets to unblock CRD deletion")
+		cmd = exec.Command("kubectl", "delete", "statefulsets", "--all", "-n", "default", "--timeout=30s", "--wait=false")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "pdbpolicies", "--all", "--all-namespaces", "--timeout=30s", "--wait=false")
+		_, _ = utils.Run(cmd)
+
 		By("uninstalling CRDs")
 		cmd = exec.Command("make", "uninstall")
 		_, _ = utils.Run(cmd)
 
 		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
+		cmd = exec.Command("kubectl", "delete", "ns", namespace, "--timeout=60s", "--wait=false")
 		_, _ = utils.Run(cmd)
 	})
 
@@ -277,6 +294,267 @@ var _ = Describe("Manager", Ordered, func() {
 		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
 		//    strings.ToLower(<Kind>),
 		// ))
+	})
+
+	Context("StatefulSet PDB management", func() {
+		const testNamespace = "default"
+
+		// dedent strips leading tabs from YAML heredocs so kubectl can parse them.
+		dedent := func(s string) string {
+			return strings.ReplaceAll(s, "\t", "")
+		}
+
+		// cleanupStatefulSet removes a StatefulSet and its PDB, ignoring not-found errors.
+		cleanupStatefulSet := func(name string) {
+			cmd := exec.Command("kubectl", "delete", "statefulset", name, "-n", testNamespace,
+				"--ignore-not-found", "--wait=false", "--grace-period=0")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "pdb", name+"-pdb", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "pdbpolicy", name+"-policy", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+		}
+
+		It("should create a PDB when a StatefulSet matches a PDBPolicy", func() {
+			const stsName = "e2e-sts-policy"
+			cleanupStatefulSet(stsName)
+			DeferCleanup(func() { cleanupStatefulSet(stsName) })
+
+			By("creating a PDBPolicy that selects the StatefulSet by label")
+			policyYAML := fmt.Sprintf(`
+apiVersion: availability.pdboperator.io/v1alpha1
+kind: PDBPolicy
+metadata:
+  name: %s-policy
+  namespace: %s
+spec:
+  availabilityClass: high-availability
+  workloadSelector:
+    matchLabels:
+      app: %s
+  priority: 10
+`, stsName, testNamespace, stsName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(policyYAML))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create PDBPolicy")
+
+			By("creating a StatefulSet with 3 replicas")
+			stsYAML := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    pdboperator.io/availability-class: high-availability
+  labels:
+    app: %s
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: %s
+  template:
+    metadata:
+      labels:
+        app: %s
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+`, stsName, testNamespace, stsName, stsName, stsName)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(stsYAML))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create StatefulSet")
+
+			By("waiting for the PDB to be created")
+			verifyPDBCreated := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", stsName+"-pdb",
+					"-n", testNamespace,
+					"-o", "jsonpath={.spec.minAvailable}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "PDB should exist")
+				g.Expect(output).To(Equal("75%"), "high-availability should set minAvailable to 75%%")
+			}
+			Eventually(verifyPDBCreated).Should(Succeed())
+
+			By("verifying PDB owner reference points to the StatefulSet")
+			cmd = exec.Command("kubectl", "get", "pdb", stsName+"-pdb",
+				"-n", testNamespace,
+				"-o", "jsonpath={.metadata.ownerReferences[0].kind}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("StatefulSet"))
+		})
+
+		It("should skip PDB creation for a StatefulSet with fewer than 2 replicas", func() {
+			const stsName = "e2e-sts-single"
+			cleanupStatefulSet(stsName)
+			DeferCleanup(func() { cleanupStatefulSet(stsName) })
+
+			By("creating a StatefulSet with 1 replica")
+			stsYAML := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    pdboperator.io/availability-class: standard
+  labels:
+    app: %s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: %s
+  template:
+    metadata:
+      labels:
+        app: %s
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+`, stsName, testNamespace, stsName, stsName, stsName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(stsYAML))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create single-replica StatefulSet")
+
+			By("confirming no PDB is created after a reconciliation window")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", stsName+"-pdb",
+					"-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "PDB should not exist for single-replica StatefulSet")
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+		})
+
+		It("should delete the PDB when the StatefulSet is deleted", func() {
+			const stsName = "e2e-sts-delete"
+			cleanupStatefulSet(stsName)
+			DeferCleanup(func() { cleanupStatefulSet(stsName) })
+
+			By("creating a StatefulSet with availability annotation")
+			stsYAML := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    pdboperator.io/availability-class: standard
+  labels:
+    app: %s
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: %s
+  template:
+    metadata:
+      labels:
+        app: %s
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+`, stsName, testNamespace, stsName, stsName, stsName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(stsYAML))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the PDB to be created")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", stsName+"-pdb", "-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "PDB should exist before deletion test")
+			}).Should(Succeed())
+
+			By("deleting the StatefulSet")
+			cmd = exec.Command("kubectl", "delete", "statefulset", stsName, "-n", testNamespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the PDB to be cleaned up")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", stsName+"-pdb", "-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "PDB should be deleted after StatefulSet deletion")
+			}).Should(Succeed())
+		})
+
+		It("should respect strict enforcement - annotation override blocked", func() {
+			const stsName = "e2e-sts-strict"
+			cleanupStatefulSet(stsName)
+			DeferCleanup(func() { cleanupStatefulSet(stsName) })
+
+			By("creating a strict PDBPolicy")
+			policyYAML := fmt.Sprintf(`
+apiVersion: availability.pdboperator.io/v1alpha1
+kind: PDBPolicy
+metadata:
+  name: %s-policy
+  namespace: %s
+spec:
+  availabilityClass: mission-critical
+  enforcement: strict
+  workloadSelector:
+    matchLabels:
+      app: %s
+  priority: 100
+`, stsName, testNamespace, stsName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(policyYAML))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a StatefulSet with a lower annotation override")
+			stsYAML := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    pdboperator.io/availability-class: non-critical
+  labels:
+    app: %s
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: %s
+  template:
+    metadata:
+      labels:
+        app: %s
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+`, stsName, testNamespace, stsName, stsName, stsName)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(stsYAML))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the PDB uses mission-critical (policy wins over annotation)")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", stsName+"-pdb",
+					"-n", testNamespace,
+					"-o", "jsonpath={.spec.minAvailable}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("90%"), "strict policy should override annotation - mission-critical = 90%%")
+			}).Should(Succeed())
+		})
 	})
 })
 
