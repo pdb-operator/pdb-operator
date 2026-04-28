@@ -820,66 +820,14 @@ func (r *PDBPolicyReconciler) findMatchingStatefulSets(ctx context.Context, poli
 	_, span := tracing.StartSpan(ctx, "FindMatchingStatefulSets")
 	defer span.End()
 
-	stsList := &appsv1.StatefulSetList{}
-
-	if len(policy.Spec.WorkloadSelector.Namespaces) > 0 {
-		const batchSize = 5
-		namespaces := policy.Spec.WorkloadSelector.Namespaces
-
-		for i := 0; i < len(namespaces); i += batchSize {
-			end := i + batchSize
-			if end > len(namespaces) {
-				end = len(namespaces)
-			}
-
-			batch := namespaces[i:end]
-			batchResults := make(chan *appsv1.StatefulSetList, len(batch))
-			batchErrors := make(chan error, len(batch))
-
-			var wg sync.WaitGroup
-			for _, ns := range batch {
-				wg.Add(1)
-				go func(namespace string) {
-					defer wg.Done()
-					namespacedList := &appsv1.StatefulSetList{}
-					if err := r.List(ctx, namespacedList, client.InNamespace(namespace)); err != nil {
-						batchErrors <- err
-						return
-					}
-					batchResults <- namespacedList
-				}(ns)
-			}
-
-			go func() {
-				wg.Wait()
-				close(batchResults)
-				close(batchErrors)
-			}()
-
-			for {
-				select {
-				case err := <-batchErrors:
-					if err != nil {
-						return nil, err
-					}
-				case list, ok := <-batchResults:
-					if !ok {
-						goto done
-					}
-					stsList.Items = append(stsList.Items, list.Items...)
-				}
-			}
-		done:
-		}
-	} else {
-		if err := r.List(ctx, stsList); err != nil {
-			return nil, err
-		}
+	items, err := listStatefulSetsInNamespaces(ctx, r.Client, policy.Spec.WorkloadSelector.Namespaces)
+	if err != nil {
+		return nil, err
 	}
 
 	matchCount := 0
-	for _, sts := range stsList.Items {
-		if r.statefulSetMatchesSelector(policy.Spec.WorkloadSelector, &sts) {
+	for _, sts := range items {
+		if PolicyMatchesWorkload(policy, &statefulSetWorkload{&sts}) {
 			workloadName := ""
 			if sts.Annotations != nil {
 				workloadName = sts.Annotations[AnnotationWorkloadName]
@@ -898,90 +846,11 @@ func (r *PDBPolicyReconciler) findMatchingStatefulSets(ctx context.Context, poli
 	}
 
 	span.SetAttributes(
-		attribute.Int("statefulsets.evaluated", len(stsList.Items)),
+		attribute.Int("statefulsets.evaluated", len(items)),
 		attribute.Int("statefulsets.matched", matchCount),
 	)
 
 	return matchingComponents, nil
-}
-
-// statefulSetMatchesSelector checks if a StatefulSet matches the workload selector
-func (r *PDBPolicyReconciler) statefulSetMatchesSelector(selector availabilityv1alpha1.WorkloadSelector, sts *appsv1.StatefulSet) bool {
-	// Check workload names
-	if len(selector.WorkloadNames) > 0 {
-		workloadName := ""
-		if sts.Annotations != nil {
-			workloadName = sts.Annotations[AnnotationWorkloadName]
-		}
-		if workloadName == "" {
-			workloadName = sts.Name
-		}
-		nameMatch := false
-		for _, name := range selector.WorkloadNames {
-			if name == workloadName {
-				nameMatch = true
-				break
-			}
-		}
-		if !nameMatch {
-			return false
-		}
-	}
-
-	// Check workload functions
-	if len(selector.WorkloadFunctions) > 0 {
-		stsFunction := availabilityv1alpha1.CoreFunction
-		if sts.Annotations != nil {
-			if function := sts.Annotations[AnnotationWorkloadFunction]; function != "" {
-				stsFunction = availabilityv1alpha1.WorkloadFunction(function)
-			}
-		}
-		functionMatch := false
-		for _, function := range selector.WorkloadFunctions {
-			if function == stsFunction {
-				functionMatch = true
-				break
-			}
-		}
-		if !functionMatch {
-			return false
-		}
-	}
-
-	// Check namespaces
-	if len(selector.Namespaces) > 0 {
-		nsMatch := false
-		for _, ns := range selector.Namespaces {
-			if ns == sts.Namespace {
-				nsMatch = true
-				break
-			}
-		}
-		if !nsMatch {
-			return false
-		}
-	}
-
-	// Check match labels
-	if len(selector.MatchLabels) > 0 {
-		if sts.Labels == nil {
-			return false
-		}
-		for key, value := range selector.MatchLabels {
-			if sts.Labels[key] != value {
-				return false
-			}
-		}
-	}
-
-	// Check match expressions
-	for _, expr := range selector.MatchExpressions {
-		if !r.evaluateMatchExpression(expr, sts.Labels) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // findPoliciesForStatefulSet finds PDBPolicies that might be affected by a StatefulSet change
@@ -1001,7 +870,7 @@ func (r *PDBPolicyReconciler) findPoliciesForStatefulSet(ctx context.Context, ob
 
 	var requests []ctrl.Request
 	for _, policy := range policyList.Items {
-		if r.statefulSetMatchesSelector(policy.Spec.WorkloadSelector, sts) {
+		if PolicyMatchesWorkload(&policy, &statefulSetWorkload{sts}) {
 			requests = append(requests, ctrl.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      policy.Name,
@@ -1016,38 +885,4 @@ func (r *PDBPolicyReconciler) findPoliciesForStatefulSet(ctx context.Context, ob
 	}
 
 	return requests
-}
-
-// evaluateMatchExpression evaluates a single label selector requirement against a set of labels
-func (r *PDBPolicyReconciler) evaluateMatchExpression(expr metav1.LabelSelectorRequirement, labels map[string]string) bool {
-	value, exists := labels[expr.Key]
-
-	switch expr.Operator {
-	case metav1.LabelSelectorOpIn:
-		if !exists {
-			return false
-		}
-		for _, v := range expr.Values {
-			if value == v {
-				return true
-			}
-		}
-		return false
-	case metav1.LabelSelectorOpNotIn:
-		if !exists {
-			return true
-		}
-		for _, v := range expr.Values {
-			if value == v {
-				return false
-			}
-		}
-		return true
-	case metav1.LabelSelectorOpExists:
-		return exists
-	case metav1.LabelSelectorOpDoesNotExist:
-		return !exists
-	default:
-		return false
-	}
 }

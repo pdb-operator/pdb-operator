@@ -45,6 +45,10 @@ import (
 	"github.com/pdb-operator/pdb-operator/internal/metrics"
 )
 
+// kindStatefulSet is the Kind string for StatefulSet resources.
+const kindStatefulSet = "StatefulSet"
+const maintenanceModeActive = "true"
+
 // WorkloadAccessor abstracts Deployment/StatefulSet so shared logic
 // does not depend on a concrete API type.
 type WorkloadAccessor interface {
@@ -62,30 +66,6 @@ type WorkloadAccessor interface {
 	KindLower() string
 }
 
-// deploymentWorkload adapter is prepared for when deployment_controller.go
-// is migrated to use workload.go shared logic.
-// Uncomment when that migration happens.
-//
-// type deploymentWorkload struct{ *appsv1.Deployment }
-
-// func (d *deploymentWorkload) GetObject() client.Object           { return d.Deployment }
-// func (d *deploymentWorkload) GetName() string                    { return d.Name }
-// func (d *deploymentWorkload) GetNamespace() string               { return d.Namespace }
-// func (d *deploymentWorkload) GetAnnotations() map[string]string  { return d.Annotations }
-// func (d *deploymentWorkload) GetLabels() map[string]string       { return d.Labels }
-// func (d *deploymentWorkload) GetGeneration() int64               { return d.Generation }
-// func (d *deploymentWorkload) GetSelector() *metav1.LabelSelector { return d.Spec.Selector }
-// func (d *deploymentWorkload) GetDeletionTimestamp() *metav1.Time { return d.DeletionTimestamp }
-// func (d *deploymentWorkload) DeepCopyObject() client.Object      { return d.Deployment.DeepCopy() }
-// func (d *deploymentWorkload) Kind() string                       { return "Deployment" }
-// func (d *deploymentWorkload) KindLower() string                  { return "deployment" }
-// func (d *deploymentWorkload) GetReplicas() int32 {
-// 	if d.Spec.Replicas != nil {
-// 		return *d.Spec.Replicas
-// 	}
-// 	return 1
-// }
-
 // statefulSetWorkload is a thin adapter wrapping appsv1.StatefulSet.
 type statefulSetWorkload struct{ *appsv1.StatefulSet }
 
@@ -98,8 +78,8 @@ func (s *statefulSetWorkload) GetGeneration() int64               { return s.Gen
 func (s *statefulSetWorkload) GetSelector() *metav1.LabelSelector { return s.Spec.Selector }
 func (s *statefulSetWorkload) GetDeletionTimestamp() *metav1.Time { return s.DeletionTimestamp }
 func (s *statefulSetWorkload) DeepCopyObject() client.Object      { return s.DeepCopy() }
-func (s *statefulSetWorkload) Kind() string                       { return "StatefulSet" }
-func (s *statefulSetWorkload) KindLower() string                  { return "statefulset" }
+func (s *statefulSetWorkload) Kind() string                       { return kindStatefulSet }
+func (s *statefulSetWorkload) KindLower() string                  { return kindStatefulSet }
 func (s *statefulSetWorkload) GetReplicas() int32 {
 	if s.Spec.Replicas != nil {
 		return *s.Spec.Replicas
@@ -673,7 +653,7 @@ func RemovePDBTemporarily(ctx context.Context, c client.Client, w WorkloadAccess
 	if pdb.Annotations == nil {
 		pdb.Annotations = make(map[string]string)
 	}
-	pdb.Annotations["pdboperator.io/maintenance-mode"] = "true"
+	pdb.Annotations["pdboperator.io/maintenance-mode"] = maintenanceModeActive
 	pdb.Annotations["pdboperator.io/maintenance-start"] = time.Now().Format(time.RFC3339)
 	pdb.Spec.MinAvailable = &intstr.IntOrString{Type: intstr.Int, IntVal: 0}
 	if err := c.Patch(ctx, pdb, patch); err != nil {
@@ -789,7 +769,7 @@ func UpdatePDB(ctx context.Context, c client.Client, eventsRecorder *events.Even
 		pdb.Annotations[AnnotationEnforcement] = config.Enforcement
 		needsUpdate = true
 	}
-	if pdb.Annotations["pdboperator.io/maintenance-mode"] == "true" {
+	if pdb.Annotations["pdboperator.io/maintenance-mode"] == maintenanceModeActive {
 		delete(pdb.Annotations, "pdboperator.io/maintenance-mode")
 		delete(pdb.Annotations, "pdboperator.io/maintenance-start")
 		needsUpdate = true
@@ -828,7 +808,11 @@ func ReconcilePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, 
 	if w.GetReplicas() <= 1 {
 		logger.V(1).Info("Workload has 1 or fewer replicas, skipping PDB", "replicas", w.GetReplicas())
 		if eventsRecorder != nil {
-			eventsRecorder.DeploymentSkipped(w.GetObject(), w.GetName(), "insufficient replicas")
+			if w.Kind() == kindStatefulSet {
+				eventsRecorder.StatefulSetSkipped(w.GetObject(), w.GetName(), "insufficient replicas")
+			} else {
+				eventsRecorder.DeploymentSkipped(w.GetObject(), w.GetName(), "insufficient replicas")
+			}
 		}
 		metrics.UpdateComplianceStatus(w.GetNamespace(), w.GetName(), false, "insufficient_replicas")
 		if err := CleanupPDB(ctx, c, eventsRecorder, w, logger); err != nil {
@@ -897,4 +881,63 @@ func HandleDeletion(ctx context.Context, c client.Client, eventsRecorder *events
 	}
 	logger.Info("Successfully removed finalizer", "finalizer", FinalizerPDBCleanup)
 	return nil
+}
+
+// listStatefulSetsInNamespaces fetches StatefulSets across namespaces using
+// batched concurrent requests. If namespaces is empty, lists all namespaces.
+func listStatefulSetsInNamespaces(ctx context.Context, c client.Client, namespaces []string) ([]appsv1.StatefulSet, error) {
+	if len(namespaces) == 0 {
+		list := &appsv1.StatefulSetList{}
+		if err := c.List(ctx, list); err != nil {
+			return nil, err
+		}
+		return list.Items, nil
+	}
+
+	const batchSize = 5
+	var allItems []appsv1.StatefulSet
+
+	for i := 0; i < len(namespaces); i += batchSize {
+		end := i + batchSize
+		if end > len(namespaces) {
+			end = len(namespaces)
+		}
+		batch := namespaces[i:end]
+		batchResults := make(chan *appsv1.StatefulSetList, len(batch))
+		batchErrors := make(chan error, len(batch))
+
+		var wg sync.WaitGroup
+		for _, ns := range batch {
+			wg.Add(1)
+			go func(namespace string) {
+				defer wg.Done()
+				namespacedList := &appsv1.StatefulSetList{}
+				if err := c.List(ctx, namespacedList, client.InNamespace(namespace)); err != nil {
+					batchErrors <- err
+					return
+				}
+				batchResults <- namespacedList
+			}(ns)
+		}
+		go func() {
+			wg.Wait()
+			close(batchResults)
+			close(batchErrors)
+		}()
+		for {
+			select {
+			case err := <-batchErrors:
+				if err != nil {
+					return nil, err
+				}
+			case list, ok := <-batchResults:
+				if !ok {
+					goto done
+				}
+				allItems = append(allItems, list.Items...)
+			}
+		}
+	done:
+	}
+	return allItems, nil
 }

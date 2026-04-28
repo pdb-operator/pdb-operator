@@ -356,7 +356,7 @@ func (r *StatefulSetReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 			stsName = stsName[:len(stsName)-len(DefaultPDBSuffix)]
 		} else {
 			for _, ownerRef := range pdb.GetOwnerReferences() {
-				if ownerRef.Kind == "StatefulSet" && ownerRef.Controller != nil && *ownerRef.Controller {
+				if ownerRef.Kind == kindStatefulSet && ownerRef.Controller != nil && *ownerRef.Controller {
 					stsName = ownerRef.Name
 					break
 				}
