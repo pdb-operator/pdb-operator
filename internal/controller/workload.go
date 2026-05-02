@@ -47,6 +47,7 @@ import (
 
 // kindStatefulSet is the Kind string for StatefulSet resources.
 const kindStatefulSet = "StatefulSet"
+const kindStatefulSetLower = "statefulset"
 const maintenanceModeActive = "true"
 
 // WorkloadAccessor abstracts Deployment/StatefulSet so shared logic
@@ -79,7 +80,7 @@ func (s *statefulSetWorkload) GetSelector() *metav1.LabelSelector { return s.Spe
 func (s *statefulSetWorkload) GetDeletionTimestamp() *metav1.Time { return s.DeletionTimestamp }
 func (s *statefulSetWorkload) DeepCopyObject() client.Object      { return s.DeepCopy() }
 func (s *statefulSetWorkload) Kind() string                       { return kindStatefulSet }
-func (s *statefulSetWorkload) KindLower() string                  { return kindStatefulSet }
+func (s *statefulSetWorkload) KindLower() string                  { return kindStatefulSetLower }
 func (s *statefulSetWorkload) GetReplicas() int32 {
 	if s.Spec.Replicas != nil {
 		return *s.Spec.Replicas

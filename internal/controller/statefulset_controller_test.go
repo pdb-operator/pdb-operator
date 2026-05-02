@@ -411,3 +411,139 @@ func TestStatefulSetReconciler_MaintenanceWindow(t *testing.T) {
 	}, pdb)
 	assert.NoError(t, err, "PDB should be created outside maintenance window")
 }
+
+func TestStatefulSetReconciler_StrictEnforcementMode(t *testing.T) {
+	ctx := context.Background()
+
+	sts := newTestStatefulSet("strict-sts", "default", 3, map[string]string{
+		AnnotationAvailabilityClass: "non-critical", // User tries to set low availability
+	}, map[string]string{
+		"env": "production",
+	})
+
+	policy := &pdbv1alpha1.PDBPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "strict-policy",
+			Namespace: "default",
+		},
+		Spec: pdbv1alpha1.PDBPolicySpec{
+			AvailabilityClass: pdbv1alpha1.MissionCritical,
+			WorkloadSelector: pdbv1alpha1.WorkloadSelector{
+				MatchLabels: map[string]string{"env": "production"},
+			},
+			Enforcement: pdbv1alpha1.EnforcementStrict,
+			Priority:    100,
+		},
+	}
+
+	tr := CreateTestReconcilers(sts, policy)
+	reconciler := tr.StatefulSetReconciler
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "strict-sts", Namespace: "default"},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	pdb := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{
+		Name:      "strict-sts-pdb",
+		Namespace: "default",
+	}, pdb)
+	assert.NoError(t, err, "PDB should be created")
+	assert.Equal(t, "90%", pdb.Spec.MinAvailable.String(), "Strict mode should use policy (mission-critical = 90%)")
+}
+
+func TestStatefulSetReconciler_FlexibleEnforcementMode(t *testing.T) {
+	ctx := context.Background()
+
+	sts := newTestStatefulSet("flexible-sts", "default", 3, map[string]string{
+		AnnotationAvailabilityClass: "non-critical", // Below minimum
+	}, map[string]string{
+		"team": "platform",
+	})
+
+	policy := &pdbv1alpha1.PDBPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "flexible-policy",
+			Namespace: "default",
+		},
+		Spec: pdbv1alpha1.PDBPolicySpec{
+			AvailabilityClass: pdbv1alpha1.Standard,
+			WorkloadSelector: pdbv1alpha1.WorkloadSelector{
+				MatchLabels: map[string]string{"team": "platform"},
+			},
+			Enforcement:  pdbv1alpha1.EnforcementFlexible,
+			MinimumClass: pdbv1alpha1.Standard,
+			Priority:     50,
+		},
+	}
+
+	tr := CreateTestReconcilers(sts, policy)
+	reconciler := tr.StatefulSetReconciler
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "flexible-sts", Namespace: "default"},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	pdb := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{
+		Name:      "flexible-sts-pdb",
+		Namespace: "default",
+	}, pdb)
+	assert.NoError(t, err, "PDB should be created")
+	assert.Equal(t, "50%", pdb.Spec.MinAvailable.String(), "Flexible mode should enforce minimum (standard = 50%)")
+}
+
+func TestStatefulSetReconciler_AdvisoryEnforcementMode(t *testing.T) {
+	ctx := context.Background()
+
+	sts := newTestStatefulSet("advisory-sts", "default", 3, map[string]string{
+		AnnotationAvailabilityClass: "standard", // Annotation preferred in advisory mode
+	}, map[string]string{
+		"tier": "backend",
+	})
+
+	policy := &pdbv1alpha1.PDBPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "advisory-policy",
+			Namespace: "default",
+		},
+		Spec: pdbv1alpha1.PDBPolicySpec{
+			AvailabilityClass: pdbv1alpha1.HighAvailability,
+			WorkloadSelector: pdbv1alpha1.WorkloadSelector{
+				MatchLabels: map[string]string{"tier": "backend"},
+			},
+			Enforcement: pdbv1alpha1.EnforcementAdvisory,
+			Priority:    10,
+		},
+	}
+
+	tr := CreateTestReconcilers(sts, policy)
+	reconciler := tr.StatefulSetReconciler
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "advisory-sts", Namespace: "default"},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+	_, err = reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+
+	pdb := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{
+		Name:      "advisory-sts-pdb",
+		Namespace: "default",
+	}, pdb)
+	assert.NoError(t, err, "PDB should be created")
+	assert.Equal(t, "50%", pdb.Spec.MinAvailable.String(), "Advisory mode should use annotation (standard = 50%)")
+}
