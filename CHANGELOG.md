@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-20
+
+### Added
+- StatefulSet support: new StatefulSetController providing the same policy-driven PDB management for StatefulSets (#14)
+- Shared `WorkloadAccessor` abstraction unifying the PDB lifecycle across the Deployment and StatefulSet controllers
+- `ManagedStatefulSets` Prometheus metric
+
+### Changed
+- DeploymentController now routes its PDB lifecycle through the shared workload helpers, removing ~390 lines of duplicated logic (#32)
+- PDB-to-workload mappers now enqueue via the controller owner reference, eliminating cross-kind reconcile traffic (#14)
+- `PDBPolicy` status `appliedToWorkloads` keys now include the workload kind (`namespace/Kind/name`) to avoid collisions between same-named Deployments and StatefulSets (#14)
+- StatefulSet change-detection diagnostics dropped to `V(1)` to reduce production log noise (#31)
+- Maintenance-mode annotation keys promoted to named constants (#31)
+
+### Fixed
+- A StatefulSet scaled below 2 replicas now cleans up its PDB instead of orphaning it (#14)
+- `cleanupDuplicatePDBs` no longer deletes a PDB owned by another workload kind with an overlapping selector (#14)
+- The StatefulSet finalizer is re-added if removed out-of-band, ensuring PDB cleanup on deletion (#14)
+
 ## [0.1.0] - 2026-03-01
 
 ### Added
@@ -45,5 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distroless container base image (`gcr.io/distroless/static:nonroot`)
 - Comprehensive test suite with 71-93% coverage across packages
 
-[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pdb-operator/pdb-operator/compare/v0.1.1...v0.2.0
 [0.1.0]: https://github.com/pdb-operator/pdb-operator/releases/tag/v0.1.0
