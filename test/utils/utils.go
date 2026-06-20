@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
 )
@@ -127,9 +128,24 @@ func InstallCertManager() error {
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
 	)
-
-	_, err := Run(cmd)
-	return err
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+	// Wait for the CA bundle to be injected into the cert-manager webhook configuration.
+	// Without this, make deploy fails with "x509: certificate signed by unknown authority"
+	// because the Certificate and ClusterIssuer resources hit the webhook before its CA
+	// bundle has propagated.
+	for i := 0; i < 24; i++ {
+		cmd = exec.Command("kubectl", "get", "mutatingwebhookconfiguration",
+			"cert-manager-webhook",
+			"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
+		out, err := Run(cmd)
+		if err == nil && len(out) > 0 {
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for cert-manager CA bundle to be injected")
 }
 
 // IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed

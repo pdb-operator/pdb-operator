@@ -330,6 +330,18 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Deployment")
 		os.Exit(1)
 	}
+	// Register StatefulSet controller
+	if err := (&pdbcontroller.StatefulSetReconciler{
+		Client:      circuitBreakerClient,
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorder("statefulset-controller"),
+		Events:      eventRecorder,
+		PolicyCache: policyCache,
+		Config:      sharedConfig,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "StatefulSet")
+		os.Exit(1)
+	}
 
 	// Setup webhooks if enabled (with graceful fallback)
 	if enableWebhook {

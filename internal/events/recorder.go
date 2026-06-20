@@ -50,6 +50,11 @@ const (
 	ReasonDeploymentUnmanaged = "DeploymentUnmanaged"
 	ReasonDeploymentSkipped   = "DeploymentSkipped"
 
+	// Event reasons for statefulsets
+	ReasonStatefulSetManaged   = "StatefulSetManaged"
+	ReasonStatefulSetUnmanaged = "StatefulSetUnmanaged"
+	ReasonStatefulSetSkipped   = "StatefulSetSkipped"
+
 	// Event reasons for compliance
 	ReasonComplianceAchieved = "ComplianceAchieved"
 	ReasonComplianceLost     = "ComplianceLost"
@@ -170,6 +175,23 @@ func (e *EventRecorder) DeploymentUnmanaged(obj runtime.Object, deployment strin
 func (e *EventRecorder) DeploymentSkipped(obj runtime.Object, deployment string, reason string) {
 	e.safeEventf(obj, corev1.EventTypeNormal, ReasonDeploymentSkipped,
 		"Deployment %s skipped for PDB management: %s", deployment, reason)
+}
+
+// StatefulSet Events
+
+func (e *EventRecorder) StatefulSetManaged(obj runtime.Object, statefulset string, source string) {
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonStatefulSetManaged,
+		"StatefulSet %s is now managed for PDB (source: %s)", statefulset, source)
+}
+
+func (e *EventRecorder) StatefulSetUnmanaged(obj runtime.Object, statefulset string, reason string) {
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonStatefulSetUnmanaged,
+		"StatefulSet %s is no longer managed for PDB: %s", statefulset, reason)
+}
+
+func (e *EventRecorder) StatefulSetSkipped(obj runtime.Object, statefulset string, reason string) {
+	e.safeEventf(obj, corev1.EventTypeNormal, ReasonStatefulSetSkipped,
+		"StatefulSet %s skipped for PDB management: %s", statefulset, reason)
 }
 
 // Compliance Events

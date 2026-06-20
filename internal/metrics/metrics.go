@@ -79,6 +79,14 @@ var (
 		[]string{"namespace", "availability_class"},
 	)
 
+	ManagedStatefulSets = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pdb_operator_statefulsets_managed",
+			Help: "Current number of statefulsets being managed",
+		},
+		[]string{"namespace", "availability_class"},
+	)
+
 	PDBComplianceStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "pdb_operator_compliance_status",
@@ -234,6 +242,7 @@ func init() {
 		ReconciliationDuration,
 		ReconciliationErrors,
 		ManagedDeployments,
+		ManagedStatefulSets,
 		PDBComplianceStatus,
 		AvailabilityPoliciesActive,
 		MaintenanceWindowActive,
@@ -286,6 +295,15 @@ func UpdateManagedDeployments(counts map[string]map[string]int) {
 	for namespace, classCounts := range counts {
 		for class, count := range classCounts {
 			ManagedDeployments.WithLabelValues(namespace, class).Set(float64(count))
+		}
+	}
+}
+
+func UpdateManagedStatefulSets(counts map[string]map[string]int) {
+	ManagedStatefulSets.Reset()
+	for namespace, classCounts := range counts {
+		for class, count := range classCounts {
+			ManagedStatefulSets.WithLabelValues(namespace, class).Set(float64(count))
 		}
 	}
 }
