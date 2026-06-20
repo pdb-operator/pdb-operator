@@ -228,6 +228,59 @@ func TestStatefulSetReconciler_SingleReplica(t *testing.T) {
 	}
 }
 
+func TestStatefulSetReconciler_ScaleDownCleansUpPDB(t *testing.T) {
+	ctx := context.Background()
+
+	// StatefulSet scaled down to 1 replica, still carrying a PDB from its multi-replica state
+	sts := newTestStatefulSet("scaledown-sts", "default", 1, map[string]string{
+		AnnotationAvailabilityClass: "high-availability",
+	}, nil)
+	sts.UID = types.UID("scaledown-uid")
+
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "scaledown-sts-pdb",
+			Namespace: "default",
+			Labels:    map[string]string{LabelManagedBy: OperatorName},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "apps/v1",
+					Kind:               "StatefulSet",
+					Name:               "scaledown-sts",
+					UID:                sts.UID,
+					Controller:         &[]bool{true}[0],
+					BlockOwnerDeletion: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "75%"},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "scaledown-sts"},
+			},
+		},
+	}
+
+	tr := CreateTestReconcilers(sts, pdb)
+	reconciler := tr.StatefulSetReconciler
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "scaledown-sts", Namespace: "default"},
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, reconcile.Result{}, result)
+
+	// the orphaned PDB from the prior multi-replica state must be removed
+	deletedPDB := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{
+		Name:      "scaledown-sts-pdb",
+		Namespace: "default",
+	}, deletedPDB)
+	assert.True(t, errors.IsNotFound(err), "PDB should be cleaned up when StatefulSet scales below 2 replicas")
+}
+
 func TestStatefulSetReconciler_DeletionWithCleanup(t *testing.T) {
 	ctx := context.Background()
 

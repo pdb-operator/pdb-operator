@@ -1085,7 +1085,7 @@ func (r *DeploymentReconciler) cleanupPDB(ctx context.Context, deployment *appsv
 
 	// Only delete if we own it
 	if ownerRef := metav1.GetControllerOf(pdb); ownerRef != nil &&
-		ownerRef.Kind == "Deployment" && ownerRef.Name == deployment.Name {
+		ownerRef.Kind == kindDeployment && ownerRef.Name == deployment.Name {
 		if err := r.Delete(ctx, pdb); err != nil && !errors.IsNotFound(err) {
 			return err
 		}
@@ -1118,7 +1118,12 @@ func (r *DeploymentReconciler) cleanupDuplicatePDBs(ctx context.Context, deploym
 
 	// Find PDBs that match this deployment's selector (including partial matches)
 	var matchingPDBs []policyv1.PodDisruptionBudget
-	for _, pdb := range pdbList.Items {
+	for i := range pdbList.Items {
+		pdb := pdbList.Items[i]
+		// never touch PDBs owned by another kind (e.g. StatefulSet) even when selectors overlap
+		if ownerRef := metav1.GetControllerOf(&pdb); ownerRef != nil && ownerRef.Kind != kindDeployment {
+			continue
+		}
 		if pdb.Spec.Selector != nil && r.selectorsOverlap(pdb.Spec.Selector, deployment.Spec.Selector) {
 			matchingPDBs = append(matchingPDBs, pdb)
 		}
@@ -2007,30 +2012,21 @@ func (r *DeploymentReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, opt
 			return nil
 		}
 
-		// Extract deployment name from PDB name (remove "-pdb" suffix)
-		deploymentName := pdb.Name
-		if len(deploymentName) > len(DefaultPDBSuffix) &&
-			deploymentName[len(deploymentName)-len(DefaultPDBSuffix):] == DefaultPDBSuffix {
-			deploymentName = deploymentName[:len(deploymentName)-len(DefaultPDBSuffix)]
-		} else {
-			// If PDB doesn't follow naming convention, try to find deployment via owner reference
-			for _, ownerRef := range pdb.GetOwnerReferences() {
-				if ownerRef.Kind == "Deployment" && ownerRef.Controller != nil && *ownerRef.Controller {
-					deploymentName = ownerRef.Name
-					break
-				}
-			}
+		// only enqueue for PDBs actually owned by a Deployment, else StatefulSet-owned PDBs double reconcile traffic
+		ownerRef := metav1.GetControllerOf(pdb)
+		if ownerRef == nil || ownerRef.Kind != kindDeployment {
+			return nil
 		}
 
 		log.Log.Info("Mapping PDB event to deployment reconciliation",
 			"pdb", pdb.Name,
-			"deployment", deploymentName,
+			"deployment", ownerRef.Name,
 			"namespace", pdb.Namespace)
 
 		return []ctrl.Request{
 			{
 				NamespacedName: types.NamespacedName{
-					Name:      deploymentName,
+					Name:      ownerRef.Name,
 					Namespace: pdb.Namespace,
 				},
 			},

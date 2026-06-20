@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -19,6 +20,80 @@ import (
 
 	pdbv1alpha1 "github.com/pdb-operator/pdb-operator/api/v1alpha1"
 )
+
+func TestDeploymentReconciler_DoesNotDeleteStatefulSetOwnedPDB(t *testing.T) {
+	ctx := context.Background()
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-api", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(3),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "web", "tier": "api"},
+			},
+		},
+	}
+
+	// PDB owned by a StatefulSet whose selector overlaps the deployment's
+	stsPDB := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-pdb",
+			Namespace: "default",
+			Labels:    map[string]string{LabelManagedBy: OperatorName},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "StatefulSet",
+					Name:       "web",
+					UID:        types.UID("web-sts-uid"),
+					Controller: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "75%"},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "web"},
+			},
+		},
+	}
+
+	// deployment's own PDB so cleanup sees more than one overlapping PDB
+	deployPDB := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-api-pdb",
+			Namespace: "default",
+			Labels:    map[string]string{LabelManagedBy: OperatorName},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       "web-api",
+					UID:        types.UID("web-api-uid"),
+					Controller: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "50%"},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "web", "tier": "api"},
+			},
+		},
+	}
+
+	tr := CreateTestReconcilers(deployment, stsPDB, deployPDB)
+	reconciler := tr.DeploymentReconciler
+
+	expected := types.NamespacedName{Name: "web-api-pdb", Namespace: "default"}
+	err := reconciler.cleanupDuplicatePDBs(ctx, deployment, expected, logr.Discard())
+	require.NoError(t, err)
+
+	// the StatefulSet-owned PDB must survive even though its selector overlaps
+	survivor := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{Name: "web-pdb", Namespace: "default"}, survivor)
+	assert.NoError(t, err, "StatefulSet-owned PDB must not be deleted by the Deployment controller")
+}
 
 func TestDeploymentReconciler_AnnotationBasedPDB(t *testing.T) {
 	ctx := context.Background()

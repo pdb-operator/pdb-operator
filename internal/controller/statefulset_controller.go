@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	k8sevents "k8s.io/client-go/tools/events"
@@ -137,6 +138,12 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			attribute.String("reason", "insufficient_replicas"),
 			attribute.Int("replicas", int(w.GetReplicas())),
 		)
+		// clean up a PDB left over from a previous multi-replica state, else it orphans and blocks evictions
+		if err := CleanupPDB(ctx, r.Client, r.Events, w, logger.ToLogr()); err != nil {
+			reconcileErr = err
+			logger.Error(err, "Failed to clean up PDB for single-replica StatefulSet", map[string]any{})
+			return ctrl.Result{RequeueAfter: DefaultRequeueDelay}, err
+		}
 		if r.Events != nil {
 			r.Events.StatefulSetSkipped(sts, sts.Name, "insufficient replicas")
 		}
@@ -160,6 +167,19 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			r.Events.StatefulSetUnmanaged(sts, sts.Name, "no availability configuration")
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// add the finalizer before the state-change guard so an out-of-band removal is always restored
+	if !controllerutil.ContainsFinalizer(sts, FinalizerPDBCleanup) {
+		patch := client.MergeFrom(sts.DeepCopy())
+		controllerutil.AddFinalizer(sts, FinalizerPDBCleanup)
+		if err := r.Patch(ctx, sts, patch); err != nil {
+			reconcileErr = err
+			logger.Error(err, "Failed to add finalizer", map[string]any{})
+			return ctrl.Result{}, err
+		}
+		logger.Info("Added finalizer for PDB cleanup", map[string]any{})
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	stateChanged := r.tracker.HasStateChanged(ctx, r.Client, w, config)
@@ -209,18 +229,6 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		attribute.String("availability_class", string(config.AvailabilityClass)),
 		attribute.String("source", config.Source),
 	)
-
-	if !controllerutil.ContainsFinalizer(sts, FinalizerPDBCleanup) {
-		patch := client.MergeFrom(sts.DeepCopy())
-		controllerutil.AddFinalizer(sts, FinalizerPDBCleanup)
-		if err := r.Patch(ctx, sts, patch); err != nil {
-			reconcileErr = err
-			logger.Error(err, "Failed to add finalizer", map[string]any{})
-			return ctrl.Result{}, err
-		}
-		logger.Info("Added finalizer for PDB cleanup", map[string]any{})
-		return ctrl.Result{Requeue: true}, nil
-	}
 
 	if IsInMaintenanceWindow(config, r.PolicyCache, log.FromContext(ctx)) {
 		logger.Info("In maintenance window, temporarily relaxing PDB", map[string]any{
@@ -350,22 +358,15 @@ func (r *StatefulSetReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 		if labels := pdb.GetLabels(); labels == nil || labels[LabelManagedBy] != OperatorName {
 			return nil
 		}
-		stsName := pdb.Name
-		if len(stsName) > len(DefaultPDBSuffix) &&
-			stsName[len(stsName)-len(DefaultPDBSuffix):] == DefaultPDBSuffix {
-			stsName = stsName[:len(stsName)-len(DefaultPDBSuffix)]
-		} else {
-			for _, ownerRef := range pdb.GetOwnerReferences() {
-				if ownerRef.Kind == kindStatefulSet && ownerRef.Controller != nil && *ownerRef.Controller {
-					stsName = ownerRef.Name
-					break
-				}
-			}
+		// only enqueue for PDBs actually owned by a StatefulSet, else Deployment-owned PDBs double reconcile traffic
+		ownerRef := metav1.GetControllerOf(pdb)
+		if ownerRef == nil || ownerRef.Kind != kindStatefulSet {
+			return nil
 		}
 		log.Log.Info("Mapping PDB event to StatefulSet reconciliation",
-			"pdb", pdb.Name, "statefulset", stsName, "namespace", pdb.Namespace)
+			"pdb", pdb.Name, "statefulset", ownerRef.Name, "namespace", pdb.Namespace)
 		return []ctrl.Request{{
-			NamespacedName: types.NamespacedName{Name: stsName, Namespace: pdb.Namespace},
+			NamespacedName: types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace},
 		}}
 	})
 

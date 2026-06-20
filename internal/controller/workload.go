@@ -48,6 +48,7 @@ import (
 // kindStatefulSet is the Kind string for StatefulSet resources.
 const kindStatefulSet = "StatefulSet"
 const kindStatefulSetLower = "statefulset"
+const kindDeployment = "Deployment"
 const maintenanceModeActive = "true"
 
 // WorkloadAccessor abstracts Deployment/StatefulSet so shared logic

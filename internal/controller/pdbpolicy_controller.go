@@ -462,7 +462,7 @@ func (r *PDBPolicyReconciler) findMatchingDeployments(ctx context.Context, polic
 			if componentName == "" {
 				componentName = deployment.Name
 			}
-			matchingComponents = append(matchingComponents, fmt.Sprintf("%s/%s", deployment.Namespace, componentName))
+			matchingComponents = append(matchingComponents, fmt.Sprintf("%s/Deployment/%s", deployment.Namespace, componentName))
 			matchCount++
 
 			logger.V(2).Info("Deployment matches policy",
@@ -835,7 +835,7 @@ func (r *PDBPolicyReconciler) findMatchingStatefulSets(ctx context.Context, poli
 			if workloadName == "" {
 				workloadName = sts.Name
 			}
-			matchingComponents = append(matchingComponents, fmt.Sprintf("%s/%s", sts.Namespace, workloadName))
+			matchingComponents = append(matchingComponents, fmt.Sprintf("%s/StatefulSet/%s", sts.Namespace, workloadName))
 			matchCount++
 
 			logger.V(2).Info("StatefulSet matches policy",
