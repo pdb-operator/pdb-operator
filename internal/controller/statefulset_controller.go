@@ -184,22 +184,20 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	stateChanged := r.tracker.HasStateChanged(ctx, r.Client, w, config)
 
-	logger.Info("Change detection result", map[string]any{
-		"stateChanged": stateChanged,
-		"statefulset":  sts.Name,
-		"namespace":    sts.Namespace,
-		"generation":   sts.Generation,
-		"debug":        true,
-	})
+	logger.V(1).Info("Change detection result",
+		"stateChanged", stateChanged,
+		"statefulset", sts.Name,
+		"namespace", sts.Namespace,
+		"generation", sts.Generation,
+	)
 
 	pdbName := types.NamespacedName{Name: sts.Name + DefaultPDBSuffix, Namespace: sts.Namespace}
 	currentPDB := &policyv1.PodDisruptionBudget{}
 	pdbExists := r.Get(ctx, pdbName, currentPDB) == nil
-	logger.Info("PDB existence check", map[string]any{
-		"pdbName":   pdbName.Name,
-		"pdbExists": pdbExists,
-		"debug":     true,
-	})
+	logger.V(1).Info("PDB existence check",
+		"pdbName", pdbName.Name,
+		"pdbExists", pdbExists,
+	)
 
 	if !stateChanged {
 		logger.Info("Skipping reconciliation - no state change detected", map[string]any{
