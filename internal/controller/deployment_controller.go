@@ -59,6 +59,8 @@ const (
 	// ODA Canvas annotation keys
 	AnnotationAvailabilityClass = "pdboperator.io/availability-class"
 	AnnotationMaintenanceWindow = "pdboperator.io/maintenance-window"
+	AnnotationMaintenanceMode   = "pdboperator.io/maintenance-mode"
+	AnnotationMaintenanceStart  = "pdboperator.io/maintenance-start"
 	AnnotationWorkloadFunction  = "pdboperator.io/workload-function"
 	AnnotationWorkloadName      = "pdboperator.io/workload-name"
 	AnnotationOverrideReason    = "pdboperator.io/override-reason"
@@ -1388,9 +1390,9 @@ func (r *DeploymentReconciler) updatePDB(ctx context.Context, pdb *policyv1.PodD
 	}
 
 	// Check if we're exiting maintenance mode
-	if pdb.Annotations["pdboperator.io/maintenance-mode"] == "true" {
-		delete(pdb.Annotations, "pdboperator.io/maintenance-mode")
-		delete(pdb.Annotations, "pdboperator.io/maintenance-start")
+	if pdb.Annotations[AnnotationMaintenanceMode] == maintenanceModeActive {
+		delete(pdb.Annotations, AnnotationMaintenanceMode)
+		delete(pdb.Annotations, AnnotationMaintenanceStart)
 		needsUpdate = true
 	}
 
@@ -1564,8 +1566,8 @@ func (r *DeploymentReconciler) removePDBTemporarily(ctx context.Context, deploym
 	if pdb.Annotations == nil {
 		pdb.Annotations = make(map[string]string)
 	}
-	pdb.Annotations["pdboperator.io/maintenance-mode"] = "true"
-	pdb.Annotations["pdboperator.io/maintenance-start"] = time.Now().Format(time.RFC3339)
+	pdb.Annotations[AnnotationMaintenanceMode] = maintenanceModeActive
+	pdb.Annotations[AnnotationMaintenanceStart] = time.Now().Format(time.RFC3339)
 
 	// Temporarily disable PDB by setting minAvailable to 0
 	pdb.Spec.MinAvailable = &intstr.IntOrString{Type: intstr.Int, IntVal: 0}

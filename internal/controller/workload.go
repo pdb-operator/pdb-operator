@@ -655,8 +655,8 @@ func RemovePDBTemporarily(ctx context.Context, c client.Client, w WorkloadAccess
 	if pdb.Annotations == nil {
 		pdb.Annotations = make(map[string]string)
 	}
-	pdb.Annotations["pdboperator.io/maintenance-mode"] = maintenanceModeActive
-	pdb.Annotations["pdboperator.io/maintenance-start"] = time.Now().Format(time.RFC3339)
+	pdb.Annotations[AnnotationMaintenanceMode] = maintenanceModeActive
+	pdb.Annotations[AnnotationMaintenanceStart] = time.Now().Format(time.RFC3339)
 	pdb.Spec.MinAvailable = &intstr.IntOrString{Type: intstr.Int, IntVal: 0}
 	if err := c.Patch(ctx, pdb, patch); err != nil {
 		return err
@@ -771,9 +771,9 @@ func UpdatePDB(ctx context.Context, c client.Client, eventsRecorder *events.Even
 		pdb.Annotations[AnnotationEnforcement] = config.Enforcement
 		needsUpdate = true
 	}
-	if pdb.Annotations["pdboperator.io/maintenance-mode"] == maintenanceModeActive {
-		delete(pdb.Annotations, "pdboperator.io/maintenance-mode")
-		delete(pdb.Annotations, "pdboperator.io/maintenance-start")
+	if pdb.Annotations[AnnotationMaintenanceMode] == maintenanceModeActive {
+		delete(pdb.Annotations, AnnotationMaintenanceMode)
+		delete(pdb.Annotations, AnnotationMaintenanceStart)
 		needsUpdate = true
 	}
 	if !selectorEquals(pdb.Spec.Selector, w.GetSelector()) {
