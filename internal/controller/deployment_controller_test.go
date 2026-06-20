@@ -2294,6 +2294,79 @@ func TestDeploymentReconciler_AvailabilityClassPDBValues(t *testing.T) {
 	}
 }
 
+func TestDeploymentReconciler_ScaleDownCleansUpPDB(t *testing.T) {
+	ctx := context.Background()
+
+	// Deployment scaled down to 1 replica, still carrying a PDB from its multi-replica state
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "scaledown-deployment",
+			Namespace: "default",
+			UID:       types.UID("scaledown-deploy-uid"),
+			Annotations: map[string]string{
+				AnnotationAvailabilityClass: "high-availability",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "scaledown-deployment"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "scaledown-deployment"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+				},
+			},
+		},
+	}
+
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "scaledown-deployment-pdb",
+			Namespace: "default",
+			Labels:    map[string]string{LabelManagedBy: OperatorName},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "apps/v1",
+					Kind:               "Deployment",
+					Name:               "scaledown-deployment",
+					UID:                deployment.UID,
+					Controller:         &[]bool{true}[0],
+					BlockOwnerDeletion: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "75%"},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "scaledown-deployment"},
+			},
+		},
+	}
+
+	tr := CreateTestReconcilers(deployment, pdb)
+	reconciler := tr.DeploymentReconciler
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "scaledown-deployment", Namespace: "default"},
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, reconcile.Result{}, result)
+
+	// the orphaned PDB from the prior multi-replica state must be removed
+	deletedPDB := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{
+		Name:      "scaledown-deployment-pdb",
+		Namespace: "default",
+	}, deletedPDB)
+	assert.True(t, errors.IsNotFound(err), "PDB should be cleaned up when Deployment scales below 2 replicas")
+}
+
 // Helper functions
 
 func int32Ptr(i int32) *int32 {

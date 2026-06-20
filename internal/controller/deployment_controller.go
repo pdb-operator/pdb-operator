@@ -245,6 +245,13 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			attribute.Int("replicas", int(replicas)),
 		)
 
+		// clean up a PDB left over from a previous multi-replica state, else it orphans and blocks evictions
+		if err := CleanupPDB(ctx, r.Client, r.Events, &deploymentWorkload{deployment}, logger.ToLogr()); err != nil {
+			reconcileErr = err
+			logger.Error(err, "Failed to clean up PDB for single-replica Deployment", map[string]any{})
+			return ctrl.Result{RequeueAfter: DefaultRequeueDelay}, err
+		}
+
 		// Record event
 		if r.Events != nil {
 			r.Events.DeploymentSkipped(deployment, deployment.Name, "insufficient replicas")
