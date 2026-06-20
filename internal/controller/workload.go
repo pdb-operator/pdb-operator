@@ -49,6 +49,7 @@ import (
 const kindStatefulSet = "StatefulSet"
 const kindStatefulSetLower = "statefulset"
 const kindDeployment = "Deployment"
+const kindDeploymentLower = "deployment"
 const maintenanceModeActive = "true"
 
 // WorkloadAccessor abstracts Deployment/StatefulSet so shared logic
@@ -85,6 +86,27 @@ func (s *statefulSetWorkload) KindLower() string                  { return kindS
 func (s *statefulSetWorkload) GetReplicas() int32 {
 	if s.Spec.Replicas != nil {
 		return *s.Spec.Replicas
+	}
+	return 1
+}
+
+// deploymentWorkload is a thin adapter wrapping appsv1.Deployment.
+type deploymentWorkload struct{ *appsv1.Deployment }
+
+func (d *deploymentWorkload) GetObject() client.Object           { return d.Deployment }
+func (d *deploymentWorkload) GetName() string                    { return d.Name }
+func (d *deploymentWorkload) GetNamespace() string               { return d.Namespace }
+func (d *deploymentWorkload) GetAnnotations() map[string]string  { return d.Annotations }
+func (d *deploymentWorkload) GetLabels() map[string]string       { return d.Labels }
+func (d *deploymentWorkload) GetGeneration() int64               { return d.Generation }
+func (d *deploymentWorkload) GetSelector() *metav1.LabelSelector { return d.Spec.Selector }
+func (d *deploymentWorkload) GetDeletionTimestamp() *metav1.Time { return d.DeletionTimestamp }
+func (d *deploymentWorkload) DeepCopyObject() client.Object      { return d.DeepCopy() }
+func (d *deploymentWorkload) Kind() string                       { return kindDeployment }
+func (d *deploymentWorkload) KindLower() string                  { return kindDeploymentLower }
+func (d *deploymentWorkload) GetReplicas() int32 {
+	if d.Spec.Replicas != nil {
+		return *d.Spec.Replicas
 	}
 	return 1
 }
