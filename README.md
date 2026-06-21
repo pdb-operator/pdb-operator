@@ -33,11 +33,12 @@ A Kubernetes operator that automates PodDisruptionBudget (PDB) management throug
 
 Managing PodDisruptionBudgets at scale is painful. Teams forget to create them, set incorrect values, or leave stale PDBs behind. PDB Operator solves this by:
 
-- **Policy-driven**: Define availability classes (`non-critical`, `standard`, `high-availability`, `mission-critical`) and the operator calculates the right PDB settings
+- **Policy-driven**: Define availability classes (`non-critical`, `standard`, `high-availability`, `mission-critical`, `custom`) and the operator calculates the right PDB settings
 - **Selector-based**: Target workloads by labels, names, functions, or namespaces
 - **Enforcement modes**: Choose `strict`, `flexible`, or `advisory` enforcement per policy
 - **Maintenance windows**: Automatically relax PDBs during scheduled maintenance
 - **Workload-aware**: Security workloads get automatically boosted availability
+- **Self-cleaning**: PDBs are removed when a workload scales below 2 replicas and recreated when it scales back, so no stale PDBs are left behind
 - **Observable**: Built-in Prometheus metrics, OpenTelemetry tracing, structured logging, and Kubernetes events
 
 ## Architecture
@@ -68,8 +69,34 @@ The operator runs three controllers:
 
 ### Install
 
+#### Helm (recommended)
+
+The chart is published as an OCI artifact:
+
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/pdb-operator/pdb-operator/main/dist/install.yaml
+helm install pdb-operator oci://ghcr.io/pdb-operator/charts/pdb-operator \
+  --version 0.2.3 \
+  --namespace pdb-operator-system --create-namespace
+```
+
+On a cluster without cert-manager, disable the webhook and its certificate:
+
+```sh
+helm install pdb-operator oci://ghcr.io/pdb-operator/charts/pdb-operator \
+  --version 0.2.3 \
+  --namespace pdb-operator-system --create-namespace \
+  --set webhooks.enabled=false --set certManager.enabled=false
+```
+
+See [helm-pdb-operator](https://github.com/pdb-operator/helm-pdb-operator) for all values.
+
+#### Raw manifests
+
+Generate a consolidated manifest from a checkout and apply it:
+
+```sh
+make build-installer IMG=ghcr.io/pdb-operator/pdb-operator:v0.2.2
+kubectl apply -f dist/install.yaml
 ```
 
 ### Create a Policy
@@ -255,9 +282,9 @@ make undeploy
 
 ### PDBs not being created
 
-1. Check the operator logs:
+1. Check the operator logs (deployment is `pdb-operator` for a Helm install, `pdb-operator-controller-manager` for the raw manifest):
    ```sh
-   kubectl logs -n pdb-operator-system deployment/pdb-operator-controller-manager
+   kubectl logs -n pdb-operator-system deployment/pdb-operator
    ```
 2. Verify the policy matches your deployment:
    ```sh
@@ -289,6 +316,14 @@ kubectl get deployment,statefulset <name> -o jsonpath='{.metadata.annotations}'
 kubectl get events --field-selector involvedObject.name=<name>
 ```
 
+### "cannot set blockOwnerDeletion" on OpenShift
+
+On clusters with the `OwnerReferencesPermissionEnforcement` admission plugin enabled (e.g. OpenShift), the operator needs `update` on the `deployments/finalizers` and `statefulsets/finalizers` subresources to set `blockOwnerDeletion` on managed PDBs. The Helm chart grants this. For a raw-manifest install, confirm the ClusterRole includes:
+
+```sh
+kubectl get clusterrole pdb-operator-manager-role -o yaml | grep finalizers
+```
+
 ### Metrics not showing
 
 1. Verify the metrics service is running:
@@ -314,7 +349,7 @@ git commit -s -m "feat: add new feature"
 
 ## Community
 
-- [CNCF Slack — #pdb-operator](https://cloud-native.slack.com/channels/pdb-operator)
+- [CNCF Slack: #pdb-operator](https://cloud-native.slack.com/channels/pdb-operator)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Governance](GOVERNANCE.md)
 - [Security Policy](SECURITY.md)
@@ -324,6 +359,6 @@ git commit -s -m "feat: add new feature"
 
 ## License
 
-Copyright 2025 The PDB Operator Authors.
+Copyright 2025-2026 The PDB Operator Authors.
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
