@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-21
+
+### Fixed
+- Deployment scaled below 2 replicas now cleans up its PDB instead of orphaning it, which previously blocked evictions, node drains and cluster-autoscaler on the surviving pod (#35)
+
+### Testing
+- e2e coverage for PDB cleanup on scale-down for both Deployments and StatefulSets (#36)
+- De-flaked the time-dependent maintenance-window unit tests (#38)
+
 ## [0.2.0] - 2026-06-20
 
 ### Added
@@ -64,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distroless container base image (`gcr.io/distroless/static:nonroot`)
 - Comprehensive test suite with 71-93% coverage across packages
 
-[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pdb-operator/pdb-operator/compare/v0.1.1...v0.2.0
 [0.1.0]: https://github.com/pdb-operator/pdb-operator/releases/tag/v0.1.0
