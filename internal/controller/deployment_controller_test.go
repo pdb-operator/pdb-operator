@@ -355,6 +355,10 @@ func TestDeploymentReconciler_SingleReplicaDeployment(t *testing.T) {
 func TestDeploymentReconciler_MaintenanceWindow(t *testing.T) {
 	ctx := context.Background()
 
+	// a window 2-3h ahead is never active regardless of when the test runs
+	now := time.Now().UTC()
+	inactiveWindow := now.Add(2*time.Hour).Format("15:04") + "-" + now.Add(3*time.Hour).Format("15:04") + " UTC"
+
 	// Create deployment with maintenance window annotation
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -362,7 +366,7 @@ func TestDeploymentReconciler_MaintenanceWindow(t *testing.T) {
 			Namespace: "default",
 			Annotations: map[string]string{
 				AnnotationAvailabilityClass: "standard",
-				AnnotationMaintenanceWindow: "02:00-04:00 UTC", // Not active now
+				AnnotationMaintenanceWindow: inactiveWindow,
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
