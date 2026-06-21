@@ -32,6 +32,15 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - deployments/finalizers
+  - statefulsets/finalizers
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - availability.pdboperator.io
   resources:
   - pdbpolicies
