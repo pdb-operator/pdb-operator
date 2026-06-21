@@ -555,8 +555,90 @@ spec:
 				g.Expect(output).To(Equal("90%"), "strict policy should override annotation - mission-critical = 90%%")
 			}).Should(Succeed())
 		})
+
+		It("should delete the PDB when the StatefulSet scales below 2 replicas", func() {
+			const stsName = "e2e-sts-scaledown"
+			cleanupStatefulSet(stsName)
+			DeferCleanup(func() { cleanupStatefulSet(stsName) })
+			verifyScaleDownCleansUpPDB("StatefulSet", "statefulset", stsName, testNamespace)
+		})
+	})
+
+	Context("Deployment PDB management", func() {
+		const testNamespace = "default"
+
+		// cleanupDeployment removes a Deployment and its PDB, ignoring not-found errors.
+		cleanupDeployment := func(name string) {
+			cmd := exec.Command("kubectl", "delete", "deployment", name, "-n", testNamespace,
+				"--ignore-not-found", "--wait=false", "--grace-period=0")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "pdb", name+"-pdb", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+		}
+
+		It("should delete the PDB when the Deployment scales below 2 replicas", func() {
+			const deployName = "e2e-deploy-scaledown"
+			cleanupDeployment(deployName)
+			DeferCleanup(func() { cleanupDeployment(deployName) })
+			verifyScaleDownCleansUpPDB("Deployment", "deployment", deployName, testNamespace)
+		})
 	})
 })
+
+// verifyScaleDownCleansUpPDB creates a 3-replica workload of the given kind, waits for its
+// PDB, scales it to 1, and asserts the orphaned PDB is cleaned up. kind is the API Kind
+// (StatefulSet/Deployment); kindArg is the kubectl resource arg (statefulset/deployment).
+func verifyScaleDownCleansUpPDB(kind, kindArg, name, namespace string) {
+	By(fmt.Sprintf("creating a %s with 3 replicas", kind))
+	workloadYAML := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: %s
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    pdboperator.io/availability-class: high-availability
+  labels:
+    app: %s
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: %s
+  template:
+    metadata:
+      labels:
+        app: %s
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+`, kind, name, namespace, name, name, name)
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(strings.ReplaceAll(workloadYAML, "\t", ""))
+	_, err := utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred())
+
+	By("waiting for the PDB to be created")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "pdb", name+"-pdb", "-n", namespace)
+		_, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "PDB should exist before scale-down")
+	}).Should(Succeed())
+
+	By(fmt.Sprintf("scaling the %s down to 1 replica", kind))
+	cmd = exec.Command("kubectl", "scale", kindArg, name, "-n", namespace, "--replicas=1")
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred())
+
+	By("waiting for the orphaned PDB to be cleaned up")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "pdb", name+"-pdb", "-n", namespace)
+		_, err := utils.Run(cmd)
+		g.Expect(err).To(HaveOccurred(), "PDB should be deleted after scaling below 2 replicas")
+	}).Should(Succeed())
+}
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
