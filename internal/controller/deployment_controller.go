@@ -59,6 +59,8 @@ const (
 	// ODA Canvas annotation keys
 	AnnotationAvailabilityClass = "pdboperator.io/availability-class"
 	AnnotationMaintenanceWindow = "pdboperator.io/maintenance-window"
+	AnnotationMaintenanceMode   = "pdboperator.io/maintenance-mode"
+	AnnotationMaintenanceStart  = "pdboperator.io/maintenance-start"
 	AnnotationWorkloadFunction  = "pdboperator.io/workload-function"
 	AnnotationWorkloadName      = "pdboperator.io/workload-name"
 	AnnotationOverrideReason    = "pdboperator.io/override-reason"
@@ -121,6 +123,7 @@ type AvailabilityConfig struct {
 
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments/finalizers,verbs=get;patch;update
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=availability.pdboperator.io,resources=pdbpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -221,7 +224,7 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// Add deletion event to span
 		tracing.AddEvent(ctx, "DeletingPDB")
 
-		if err := r.handleDeletion(ctx, deployment, logger.ToLogr()); err != nil {
+		if err := HandleDeletion(ctx, r.Client, r.Events, &deploymentWorkload{deployment}, logger.ToLogr()); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -242,6 +245,13 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			attribute.String("reason", "insufficient_replicas"),
 			attribute.Int("replicas", int(replicas)),
 		)
+
+		// clean up a PDB left over from a previous multi-replica state, else it orphans and blocks evictions
+		if err := CleanupPDB(ctx, r.Client, r.Events, &deploymentWorkload{deployment}, logger.ToLogr()); err != nil {
+			reconcileErr = err
+			logger.Error(err, "Failed to clean up PDB for single-replica Deployment", map[string]any{})
+			return ctrl.Result{RequeueAfter: DefaultRequeueDelay}, err
+		}
 
 		// Record event
 		if r.Events != nil {
@@ -387,7 +397,14 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 	}
 
-	result, err := r.reconcilePDB(ctx, deployment, config, log.FromContext(ctx))
+	// Remove any stale duplicate PDBs before reconciling the canonical one
+	if err := r.cleanupDuplicatePDBs(ctx, deployment, pdbName, log.FromContext(ctx)); err != nil {
+		reconcileErr = err
+		logger.Error(err, "Failed to cleanup duplicate PDBs", map[string]any{})
+		return ctrl.Result{RequeueAfter: DefaultRequeueDelay}, err
+	}
+
+	result, err := ReconcilePDB(ctx, r.Client, r.Scheme, r.Events, &deploymentWorkload{deployment}, config, log.FromContext(ctx))
 	if err != nil {
 		reconcileErr = err
 		// If PDB creation/update fails, requeue with backoff
@@ -1014,100 +1031,6 @@ func (r *DeploymentReconciler) logPolicyConflicts(
 	}
 }
 
-// handleDeletion handles the deletion of a deployment
-func (r *DeploymentReconciler) handleDeletion(ctx context.Context, deployment *appsv1.Deployment, logger logr.Logger) error {
-	logger.Info("Handling deployment deletion")
-
-	// Clean up PDB if it exists
-	if err := r.cleanupPDB(ctx, deployment, logger); err != nil {
-		logger.Error(err, "Failed to cleanup PDB during deletion")
-		return err
-	}
-
-	// Remove finalizer
-	if err := r.removeFinalizer(ctx, deployment, logger); err != nil {
-		logger.Error(err, "Failed to remove finalizer during deletion")
-		return err
-	}
-
-	return nil
-}
-
-// removeFinalizer removes the PDB cleanup finalizer from a deployment
-func (r *DeploymentReconciler) removeFinalizer(ctx context.Context, deployment *appsv1.Deployment, logger logr.Logger) error {
-	if !controllerutil.ContainsFinalizer(deployment, FinalizerPDBCleanup) {
-		return nil
-	}
-
-	patch := client.MergeFrom(deployment.DeepCopy())
-	controllerutil.RemoveFinalizer(deployment, FinalizerPDBCleanup)
-
-	if err := r.Patch(ctx, deployment, patch); err != nil {
-		if errors.IsNotFound(err) {
-			return nil
-		}
-		// Handle conflict by fetching latest and retrying
-		if errors.IsConflict(err) {
-			latestDeployment := &appsv1.Deployment{}
-			if err := r.Get(ctx, types.NamespacedName{
-				Name:      deployment.Name,
-				Namespace: deployment.Namespace,
-			}, latestDeployment); err != nil {
-				return err
-			}
-
-			patch := client.MergeFrom(latestDeployment.DeepCopy())
-			controllerutil.RemoveFinalizer(latestDeployment, FinalizerPDBCleanup)
-			return r.Patch(ctx, latestDeployment, patch)
-		}
-		return err
-	}
-
-	logger.Info("Successfully removed finalizer", "finalizer", FinalizerPDBCleanup)
-	return nil
-}
-
-// cleanupPDB removes the PDB associated with a deployment
-func (r *DeploymentReconciler) cleanupPDB(ctx context.Context, deployment *appsv1.Deployment, logger logr.Logger) error {
-	pdbName := types.NamespacedName{
-		Name:      deployment.Name + DefaultPDBSuffix,
-		Namespace: deployment.Namespace,
-	}
-
-	pdb := &policyv1.PodDisruptionBudget{}
-	if err := r.Get(ctx, pdbName, pdb); err != nil {
-		if errors.IsNotFound(err) {
-			logger.V(1).Info("PDB doesn't exist, nothing to clean up")
-			return nil
-		}
-		return err
-	}
-
-	// Only delete if we own it
-	if ownerRef := metav1.GetControllerOf(pdb); ownerRef != nil &&
-		ownerRef.Kind == "Deployment" && ownerRef.Name == deployment.Name {
-		if err := r.Delete(ctx, pdb); err != nil && !errors.IsNotFound(err) {
-			return err
-		}
-
-		// Record metrics and events
-		metrics.RecordPDBDeleted(deployment.Namespace, "deployment_deleted")
-		r.Events.PDBDeleted(deployment, deployment.Name, pdbName.Name, "deployment_deleted")
-
-		// Update compliance status
-		metrics.UpdateComplianceStatus(
-			deployment.Namespace,
-			deployment.Name,
-			true,
-			"deleted",
-		)
-
-		logger.Info("Successfully deleted PDB", "pdb", pdbName.Name)
-	}
-
-	return nil
-}
-
 // cleanupDuplicatePDBs removes duplicate PDBs for the same deployment, keeping only the expected one
 func (r *DeploymentReconciler) cleanupDuplicatePDBs(ctx context.Context, deployment *appsv1.Deployment, expectedPDBName types.NamespacedName, logger logr.Logger) error {
 	// List all PDBs in the namespace
@@ -1118,7 +1041,12 @@ func (r *DeploymentReconciler) cleanupDuplicatePDBs(ctx context.Context, deploym
 
 	// Find PDBs that match this deployment's selector (including partial matches)
 	var matchingPDBs []policyv1.PodDisruptionBudget
-	for _, pdb := range pdbList.Items {
+	for i := range pdbList.Items {
+		pdb := pdbList.Items[i]
+		// never touch PDBs owned by another kind (e.g. StatefulSet) even when selectors overlap
+		if ownerRef := metav1.GetControllerOf(&pdb); ownerRef != nil && ownerRef.Kind != kindDeployment {
+			continue
+		}
 		if pdb.Spec.Selector != nil && r.selectorsOverlap(pdb.Spec.Selector, deployment.Spec.Selector) {
 			matchingPDBs = append(matchingPDBs, pdb)
 		}
@@ -1147,313 +1075,6 @@ func (r *DeploymentReconciler) cleanupDuplicatePDBs(ctx context.Context, deploym
 	}
 
 	return nil
-}
-
-// reconcilePDB creates or updates the PDB with optimization
-func (r *DeploymentReconciler) reconcilePDB(ctx context.Context, deployment *appsv1.Deployment, config *AvailabilityConfig, logger logr.Logger) (ctrl.Result, error) {
-	// Skip PDB creation for single replica deployments
-	if deployment.Spec.Replicas != nil && *deployment.Spec.Replicas <= 1 {
-		logger.V(1).Info("Deployment has 1 or fewer replicas, skipping PDB creation",
-			"replicas", *deployment.Spec.Replicas)
-
-		// Record event and update compliance
-		r.Events.DeploymentSkipped(deployment, deployment.Name, "insufficient replicas")
-		metrics.UpdateComplianceStatus(
-			deployment.Namespace,
-			deployment.Name,
-			false,
-			"insufficient_replicas",
-		)
-
-		// Clean up any existing PDB
-		if err := r.cleanupPDB(ctx, deployment, logger); err != nil {
-			logger.Error(err, "Failed to cleanup PDB for single replica deployment")
-		}
-		return ctrl.Result{}, nil
-	}
-
-	pdbName := types.NamespacedName{
-		Name:      deployment.Name + DefaultPDBSuffix,
-		Namespace: deployment.Namespace,
-	}
-
-	// First, check for any existing PDBs for this deployment and clean up duplicates
-	if err := r.cleanupDuplicatePDBs(ctx, deployment, pdbName, logger); err != nil {
-		logger.Error(err, "Failed to cleanup duplicate PDBs")
-		return ctrl.Result{}, err
-	}
-
-	pdb := &policyv1.PodDisruptionBudget{}
-	err := r.Get(ctx, pdbName, pdb)
-
-	if errors.IsNotFound(err) {
-		return r.createPDB(ctx, pdbName, config, deployment, logger)
-	} else if err != nil {
-		logger.Error(err, "Failed to get PDB")
-		return ctrl.Result{}, err
-	}
-
-	// PDB exists, check if update needed
-	return r.updatePDB(ctx, pdb, config, deployment, logger)
-}
-
-// createPDB creates a new PDB for the deployment
-func (r *DeploymentReconciler) createPDB(ctx context.Context, pdbName types.NamespacedName, config *AvailabilityConfig, deployment *appsv1.Deployment, _ logr.Logger) (ctrl.Result, error) {
-	// Use structured logger with context for trace information
-	structuredLogger := logging.NewStructuredLogger(ctx)
-	structuredLogger.Info("Creating PDB", map[string]any{
-		"name":              pdbName.Name,
-		"availabilityClass": config.AvailabilityClass,
-		"minAvailable":      config.MinAvailable.String(),
-		"source":            config.Source,
-		"policy":            config.PolicyName,
-	})
-
-	// Create labels for the PDB
-	labels := map[string]string{
-		LabelManagedBy:         OperatorName,
-		LabelAvailabilityClass: string(config.AvailabilityClass),
-		LabelWorkloadFunction:  string(config.WorkloadFunction),
-	}
-
-	// Add workload label if available
-	if deployment.Annotations != nil && deployment.Annotations[AnnotationWorkloadName] != "" {
-		labels[LabelWorkload] = deployment.Annotations[AnnotationWorkloadName]
-	}
-
-	// Clean up empty labels
-	for k, v := range labels {
-		if v == "" {
-			delete(labels, k)
-		}
-	}
-
-	// Create annotations for metadata
-	annotations := make(map[string]string)
-	annotations[AnnotationCreatedBy] = OperatorName
-	annotations[AnnotationCreationTime] = time.Now().Format(time.RFC3339)
-	annotations[AnnotationAvailabilityClass] = string(config.AvailabilityClass)
-	if config.Description != "" {
-		annotations[AnnotationDescription] = config.Description
-	}
-	if config.PolicyName != "" {
-		annotations[AnnotationPolicySource] = config.PolicyName
-		annotations[AnnotationEnforcement] = config.Enforcement
-	}
-
-	pdb := &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        pdbName.Name,
-			Namespace:   pdbName.Namespace,
-			Labels:      labels,
-			Annotations: annotations,
-		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable: &config.MinAvailable,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: deployment.Spec.Selector.MatchLabels,
-			},
-		},
-	}
-
-	// Set owner reference to Deployment
-	if err := ctrl.SetControllerReference(deployment, pdb, r.Scheme); err != nil {
-		structuredLogger.Error(err, "Failed to set controller reference", nil)
-		return ctrl.Result{}, err
-	}
-
-	if createErr := r.Create(ctx, pdb); createErr != nil {
-		structuredLogger.Error(createErr, "Failed to create PDB", nil)
-
-		// Check if deployment still exists before creating event
-		if err := r.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err == nil {
-			r.Events.PDBCreationFailed(deployment, deployment.Name, createErr)
-		}
-
-		metrics.UpdateComplianceStatus(
-			deployment.Namespace,
-			deployment.Name,
-			false,
-			"creation_failed",
-		)
-		return ctrl.Result{}, createErr
-	}
-
-	// Record metrics and events for successful creation
-	metrics.RecordPDBCreated(
-		deployment.Namespace,
-		string(config.AvailabilityClass),
-		string(config.WorkloadFunction),
-	)
-
-	// Check if deployment still exists before creating event
-	if err := r.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err == nil {
-		r.Events.PDBCreated(
-			deployment,
-			deployment.Name,
-			pdbName.Name,
-			string(config.AvailabilityClass),
-			config.MinAvailable.String(),
-		)
-	}
-
-	// Audit PDB creation - NO DUPLICATES
-	auditLogger := logging.NewStructuredLogger(ctx)
-	auditLogger.AuditStructured(
-		"CREATE",
-		pdbName.Name,
-		"PodDisruptionBudget",
-		deployment.Namespace,
-		deployment.Name,
-		logging.AuditResultSuccess,
-		map[string]interface{}{
-			"availabilityClass": config.AvailabilityClass,
-			"minAvailable":      config.MinAvailable.String(),
-			"source":            config.Source,
-			"policy":            config.PolicyName,
-			"enforcement":       config.Enforcement,
-		},
-	)
-
-	// Update compliance status
-	metrics.UpdateComplianceStatus(
-		deployment.Namespace,
-		deployment.Name,
-		true,
-		"created",
-	)
-
-	structuredLogger.Info("Successfully created PDB", map[string]any{
-		"name": pdbName.Name,
-	})
-	return ctrl.Result{}, nil
-}
-
-// updatePDB updates the PDB if configuration has changed
-func (r *DeploymentReconciler) updatePDB(ctx context.Context, pdb *policyv1.PodDisruptionBudget, config *AvailabilityConfig, deployment *appsv1.Deployment, _ logr.Logger) (ctrl.Result, error) {
-	// Store old value for event
-	oldMinAvailable := ""
-	if pdb.Spec.MinAvailable != nil {
-		oldMinAvailable = pdb.Spec.MinAvailable.String()
-	}
-
-	// Use structured logger with context for trace information
-	structuredLogger := logging.NewStructuredLogger(ctx)
-	structuredLogger.Info("Updating PDB", map[string]any{
-		"name":            pdb.Name,
-		"oldMinAvailable": oldMinAvailable,
-		"newMinAvailable": config.MinAvailable.String(),
-	})
-
-	// Check if update is needed
-	needsUpdate := false
-	patch := client.MergeFrom(pdb.DeepCopy())
-
-	// Update MinAvailable if changed
-	if pdb.Spec.MinAvailable == nil || pdb.Spec.MinAvailable.String() != config.MinAvailable.String() {
-		pdb.Spec.MinAvailable = &config.MinAvailable
-		needsUpdate = true
-	}
-
-	// Update labels
-	if pdb.Labels == nil {
-		pdb.Labels = make(map[string]string)
-	}
-	if pdb.Labels[LabelAvailabilityClass] != string(config.AvailabilityClass) {
-		pdb.Labels[LabelAvailabilityClass] = string(config.AvailabilityClass)
-		needsUpdate = true
-	}
-	if pdb.Labels[LabelWorkloadFunction] != string(config.WorkloadFunction) {
-		pdb.Labels[LabelWorkloadFunction] = string(config.WorkloadFunction)
-		needsUpdate = true
-	}
-
-	// Update annotations
-	if pdb.Annotations == nil {
-		pdb.Annotations = make(map[string]string)
-	}
-	pdb.Annotations[AnnotationLastModified] = time.Now().Format(time.RFC3339)
-	pdb.Annotations[AnnotationAvailabilityClass] = string(config.AvailabilityClass)
-
-	// Update policy source if changed
-	if config.PolicyName != "" && pdb.Annotations[AnnotationPolicySource] != config.PolicyName {
-		pdb.Annotations[AnnotationPolicySource] = config.PolicyName
-		pdb.Annotations[AnnotationEnforcement] = config.Enforcement
-		needsUpdate = true
-	}
-
-	// Check if we're exiting maintenance mode
-	if pdb.Annotations["pdboperator.io/maintenance-mode"] == "true" {
-		delete(pdb.Annotations, "pdboperator.io/maintenance-mode")
-		delete(pdb.Annotations, "pdboperator.io/maintenance-start")
-		needsUpdate = true
-	}
-
-	// Update selector if deployment selector changed
-	if !selectorEquals(pdb.Spec.Selector, deployment.Spec.Selector) {
-		pdb.Spec.Selector = deployment.Spec.Selector.DeepCopy()
-		needsUpdate = true
-	}
-
-	if !needsUpdate {
-		structuredLogger.Debug("PDB is up to date, no changes needed", nil)
-		return ctrl.Result{}, nil
-	}
-
-	// Apply the patch
-	if err := r.Patch(ctx, pdb, patch); err != nil {
-		structuredLogger.Error(err, "Failed to update PDB", nil)
-
-		// Check if deployment still exists before creating event
-		if err := r.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err == nil {
-			r.Events.PDBUpdateFailed(deployment, deployment.Name, err)
-		}
-
-		metrics.UpdateComplianceStatus(
-			deployment.Namespace,
-			deployment.Name,
-			false,
-			"update_failed",
-		)
-		return ctrl.Result{}, err
-	}
-
-	// Record events and metrics
-	// Check if deployment still exists before creating event
-	if err := r.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err == nil {
-		r.Events.PDBUpdated(
-			deployment,
-			deployment.Name,
-			pdb.Name,
-			oldMinAvailable,
-			config.MinAvailable.String(),
-		)
-	}
-
-	metrics.RecordPDBUpdated(deployment.Namespace, "config_change")
-
-	// Audit PDB update - NO DUPLICATES
-	auditLogger := logging.NewStructuredLogger(ctx)
-	auditLogger.AuditStructured(
-		"UPDATE",
-		pdb.Name,
-		"PodDisruptionBudget",
-		deployment.Namespace,
-		deployment.Name,
-		logging.AuditResultSuccess,
-		map[string]interface{}{
-			"oldMinAvailable": oldMinAvailable,
-			"newMinAvailable": config.MinAvailable.String(),
-			"source":          config.Source,
-			"policy":          config.PolicyName,
-			"enforcement":     config.Enforcement,
-		},
-	)
-
-	structuredLogger.Info("Successfully updated PDB", map[string]any{
-		"name": pdb.Name,
-	})
-	return ctrl.Result{}, nil
 }
 
 // Helper functions
@@ -1559,8 +1180,8 @@ func (r *DeploymentReconciler) removePDBTemporarily(ctx context.Context, deploym
 	if pdb.Annotations == nil {
 		pdb.Annotations = make(map[string]string)
 	}
-	pdb.Annotations["pdboperator.io/maintenance-mode"] = "true"
-	pdb.Annotations["pdboperator.io/maintenance-start"] = time.Now().Format(time.RFC3339)
+	pdb.Annotations[AnnotationMaintenanceMode] = maintenanceModeActive
+	pdb.Annotations[AnnotationMaintenanceStart] = time.Now().Format(time.RFC3339)
 
 	// Temporarily disable PDB by setting minAvailable to 0
 	pdb.Spec.MinAvailable = &intstr.IntOrString{Type: intstr.Int, IntVal: 0}
@@ -2007,30 +1628,21 @@ func (r *DeploymentReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, opt
 			return nil
 		}
 
-		// Extract deployment name from PDB name (remove "-pdb" suffix)
-		deploymentName := pdb.Name
-		if len(deploymentName) > len(DefaultPDBSuffix) &&
-			deploymentName[len(deploymentName)-len(DefaultPDBSuffix):] == DefaultPDBSuffix {
-			deploymentName = deploymentName[:len(deploymentName)-len(DefaultPDBSuffix)]
-		} else {
-			// If PDB doesn't follow naming convention, try to find deployment via owner reference
-			for _, ownerRef := range pdb.GetOwnerReferences() {
-				if ownerRef.Kind == "Deployment" && ownerRef.Controller != nil && *ownerRef.Controller {
-					deploymentName = ownerRef.Name
-					break
-				}
-			}
+		// only enqueue for PDBs actually owned by a Deployment, else StatefulSet-owned PDBs double reconcile traffic
+		ownerRef := metav1.GetControllerOf(pdb)
+		if ownerRef == nil || ownerRef.Kind != kindDeployment {
+			return nil
 		}
 
 		log.Log.Info("Mapping PDB event to deployment reconciliation",
 			"pdb", pdb.Name,
-			"deployment", deploymentName,
+			"deployment", ownerRef.Name,
 			"namespace", pdb.Namespace)
 
 		return []ctrl.Request{
 			{
 				NamespacedName: types.NamespacedName{
-					Name:      deploymentName,
+					Name:      ownerRef.Name,
 					Namespace: pdb.Namespace,
 				},
 			},

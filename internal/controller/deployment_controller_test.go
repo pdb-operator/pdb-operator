@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -19,6 +20,80 @@ import (
 
 	pdbv1alpha1 "github.com/pdb-operator/pdb-operator/api/v1alpha1"
 )
+
+func TestDeploymentReconciler_DoesNotDeleteStatefulSetOwnedPDB(t *testing.T) {
+	ctx := context.Background()
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-api", Namespace: "default"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(3),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "web", "tier": "api"},
+			},
+		},
+	}
+
+	// PDB owned by a StatefulSet whose selector overlaps the deployment's
+	stsPDB := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-pdb",
+			Namespace: "default",
+			Labels:    map[string]string{LabelManagedBy: OperatorName},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "StatefulSet",
+					Name:       "web",
+					UID:        types.UID("web-sts-uid"),
+					Controller: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "75%"},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "web"},
+			},
+		},
+	}
+
+	// deployment's own PDB so cleanup sees more than one overlapping PDB
+	deployPDB := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-api-pdb",
+			Namespace: "default",
+			Labels:    map[string]string{LabelManagedBy: OperatorName},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       "web-api",
+					UID:        types.UID("web-api-uid"),
+					Controller: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "50%"},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "web", "tier": "api"},
+			},
+		},
+	}
+
+	tr := CreateTestReconcilers(deployment, stsPDB, deployPDB)
+	reconciler := tr.DeploymentReconciler
+
+	expected := types.NamespacedName{Name: "web-api-pdb", Namespace: "default"}
+	err := reconciler.cleanupDuplicatePDBs(ctx, deployment, expected, logr.Discard())
+	require.NoError(t, err)
+
+	// the StatefulSet-owned PDB must survive even though its selector overlaps
+	survivor := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{Name: "web-pdb", Namespace: "default"}, survivor)
+	assert.NoError(t, err, "StatefulSet-owned PDB must not be deleted by the Deployment controller")
+}
 
 func TestDeploymentReconciler_AnnotationBasedPDB(t *testing.T) {
 	ctx := context.Background()
@@ -280,6 +355,10 @@ func TestDeploymentReconciler_SingleReplicaDeployment(t *testing.T) {
 func TestDeploymentReconciler_MaintenanceWindow(t *testing.T) {
 	ctx := context.Background()
 
+	// a window 2-3h ahead is never active regardless of when the test runs
+	now := time.Now().UTC()
+	inactiveWindow := now.Add(2*time.Hour).Format("15:04") + "-" + now.Add(3*time.Hour).Format("15:04") + " UTC"
+
 	// Create deployment with maintenance window annotation
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -287,7 +366,7 @@ func TestDeploymentReconciler_MaintenanceWindow(t *testing.T) {
 			Namespace: "default",
 			Annotations: map[string]string{
 				AnnotationAvailabilityClass: "standard",
-				AnnotationMaintenanceWindow: "02:00-04:00 UTC", // Not active now
+				AnnotationMaintenanceWindow: inactiveWindow,
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -2217,6 +2296,79 @@ func TestDeploymentReconciler_AvailabilityClassPDBValues(t *testing.T) {
 			assert.Equal(t, tc.expectedPercent, pdb.Spec.MinAvailable.String())
 		})
 	}
+}
+
+func TestDeploymentReconciler_ScaleDownCleansUpPDB(t *testing.T) {
+	ctx := context.Background()
+
+	// Deployment scaled down to 1 replica, still carrying a PDB from its multi-replica state
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "scaledown-deployment",
+			Namespace: "default",
+			UID:       types.UID("scaledown-deploy-uid"),
+			Annotations: map[string]string{
+				AnnotationAvailabilityClass: "high-availability",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "scaledown-deployment"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "scaledown-deployment"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+				},
+			},
+		},
+	}
+
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "scaledown-deployment-pdb",
+			Namespace: "default",
+			Labels:    map[string]string{LabelManagedBy: OperatorName},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "apps/v1",
+					Kind:               "Deployment",
+					Name:               "scaledown-deployment",
+					UID:                deployment.UID,
+					Controller:         &[]bool{true}[0],
+					BlockOwnerDeletion: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "75%"},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "scaledown-deployment"},
+			},
+		},
+	}
+
+	tr := CreateTestReconcilers(deployment, pdb)
+	reconciler := tr.DeploymentReconciler
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "scaledown-deployment", Namespace: "default"},
+	}
+
+	result, err := reconciler.Reconcile(ctx, req)
+	assert.NoError(t, err)
+	assert.Equal(t, reconcile.Result{}, result)
+
+	// the orphaned PDB from the prior multi-replica state must be removed
+	deletedPDB := &policyv1.PodDisruptionBudget{}
+	err = tr.Client.Get(ctx, types.NamespacedName{
+		Name:      "scaledown-deployment-pdb",
+		Namespace: "default",
+	}, deletedPDB)
+	assert.True(t, errors.IsNotFound(err), "PDB should be cleaned up when Deployment scales below 2 replicas")
 }
 
 // Helper functions

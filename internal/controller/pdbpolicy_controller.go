@@ -315,7 +315,7 @@ func (r *PDBPolicyReconciler) updateStatus(ctx context.Context, policy *availabi
 	ctx = logging.WithOperation(ctx, "status-update")
 	done := logging.StartOperation(ctx, "findMatchingDeployments")
 
-	// Find matching deployments
+	// Find matching deployments and StatefulSets
 	oldComponentCount := len(policy.Status.AppliedToWorkloads)
 	appliedComponents, err := r.findMatchingDeployments(ctx, policy, logger)
 	done()
@@ -324,6 +324,17 @@ func (r *PDBPolicyReconciler) updateStatus(ctx context.Context, policy *availabi
 		logger.Error(err, "Failed to find matching deployments")
 		return ctrl.Result{}, err
 	}
+
+	// Find matching StatefulSets and merge into appliedComponents
+	doneStatefulSets := logging.StartOperation(ctx, "findMatchingStatefulSets")
+	stsComponents, err := r.findMatchingStatefulSets(ctx, policy, logger)
+	doneStatefulSets()
+
+	if err != nil {
+		logger.Error(err, "Failed to find matching StatefulSets")
+		return ctrl.Result{}, err
+	}
+	appliedComponents = append(appliedComponents, stsComponents...)
 
 	// Log component matches
 	logger.Info("Found matching workloads",
@@ -451,7 +462,7 @@ func (r *PDBPolicyReconciler) findMatchingDeployments(ctx context.Context, polic
 			if componentName == "" {
 				componentName = deployment.Name
 			}
-			matchingComponents = append(matchingComponents, fmt.Sprintf("%s/%s", deployment.Namespace, componentName))
+			matchingComponents = append(matchingComponents, fmt.Sprintf("%s/Deployment/%s", deployment.Namespace, componentName))
 			matchCount++
 
 			logger.V(2).Info("Deployment matches policy",
@@ -755,6 +766,10 @@ func (r *PDBPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&appsv1.Deployment{},
 			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForDeployment),
 		).
+		Watches(
+			&appsv1.StatefulSet{},
+			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForStatefulSet),
+		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 3,
 		}).
@@ -790,6 +805,80 @@ func (r *PDBPolicyReconciler) findPoliciesForDeployment(ctx context.Context, obj
 			})
 
 			logger.V(2).Info("Deployment change triggers policy reconciliation",
+				"policy", policy.Name,
+				"policyNamespace", policy.Namespace)
+		}
+	}
+
+	return requests
+}
+
+// findMatchingStatefulSets finds StatefulSets that match the policy selector
+func (r *PDBPolicyReconciler) findMatchingStatefulSets(ctx context.Context, policy *availabilityv1alpha1.PDBPolicy, logger logr.Logger) ([]string, error) {
+	var matchingComponents []string
+
+	_, span := tracing.StartSpan(ctx, "FindMatchingStatefulSets")
+	defer span.End()
+
+	items, err := listStatefulSetsInNamespaces(ctx, r.Client, policy.Spec.WorkloadSelector.Namespaces)
+	if err != nil {
+		return nil, err
+	}
+
+	matchCount := 0
+	for _, sts := range items {
+		if PolicyMatchesWorkload(policy, &statefulSetWorkload{&sts}) {
+			workloadName := ""
+			if sts.Annotations != nil {
+				workloadName = sts.Annotations[AnnotationWorkloadName]
+			}
+			if workloadName == "" {
+				workloadName = sts.Name
+			}
+			matchingComponents = append(matchingComponents, fmt.Sprintf("%s/StatefulSet/%s", sts.Namespace, workloadName))
+			matchCount++
+
+			logger.V(2).Info("StatefulSet matches policy",
+				"statefulset", sts.Name,
+				"namespace", sts.Namespace,
+				"component", workloadName)
+		}
+	}
+
+	span.SetAttributes(
+		attribute.Int("statefulsets.evaluated", len(items)),
+		attribute.Int("statefulsets.matched", matchCount),
+	)
+
+	return matchingComponents, nil
+}
+
+// findPoliciesForStatefulSet finds PDBPolicies that might be affected by a StatefulSet change
+func (r *PDBPolicyReconciler) findPoliciesForStatefulSet(ctx context.Context, obj client.Object) []ctrl.Request {
+	sts, ok := obj.(*appsv1.StatefulSet)
+	if !ok {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	policyList := &availabilityv1alpha1.PDBPolicyList{}
+	if err := r.List(ctx, policyList); err != nil {
+		logger.Error(err, "Failed to list policies for StatefulSet change")
+		return nil
+	}
+
+	var requests []ctrl.Request
+	for _, policy := range policyList.Items {
+		if PolicyMatchesWorkload(&policy, &statefulSetWorkload{sts}) {
+			requests = append(requests, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      policy.Name,
+					Namespace: policy.Namespace,
+				},
+			})
+
+			logger.V(2).Info("StatefulSet change triggers policy reconciliation",
 				"policy", policy.Name,
 				"policyNamespace", policy.Namespace)
 		}

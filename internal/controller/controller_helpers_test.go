@@ -1186,6 +1186,9 @@ func TestIsInMaintenanceWindow(t *testing.T) {
 	now := time.Now().UTC()
 	startTime := now.Add(-1 * time.Hour).Format("15:04")
 	endTime := now.Add(1 * time.Hour).Format("15:04")
+	// a window 2-3h ahead is never active regardless of when the test runs
+	outsideStart := now.Add(2 * time.Hour).Format("15:04")
+	outsideEnd := now.Add(3 * time.Hour).Format("15:04")
 
 	tests := []struct {
 		name     string
@@ -1202,7 +1205,7 @@ func TestIsInMaintenanceWindow(t *testing.T) {
 		{
 			name: "outside maintenance window",
 			config: &AvailabilityConfig{
-				MaintenanceWindow: "03:00-04:00 UTC",
+				MaintenanceWindow: outsideStart + "-" + outsideEnd + " UTC",
 			},
 			expected: false,
 		},
