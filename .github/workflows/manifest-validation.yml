@@ -1,0 +1,39 @@
+name: Validate Manifests
+
+on:
+  pull_request:
+    paths:
+      - 'config/**'
+      - 'api/**'
+      - 'Makefile'
+      - '.github/workflows/manifest-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  kubeconform:
+    name: Kubeconform
+    runs-on: ubuntu-latest
+    env:
+      KUBECONFORM_VERSION: v0.6.4
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar -xz kubeconform
+
+      # -ignore-missing-schemas skips CRD-defined kinds (e.g. cert-manager Certificate/ClusterIssuer)
+      - name: Render and validate manifests
+        run: |
+          make manifests kustomize
+          ./bin/kustomize build config/default | ./kubeconform -strict -ignore-missing-schemas -summary

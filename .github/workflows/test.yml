@@ -24,8 +24,16 @@ permissions:
 
 jobs:
   test:
-    name: Run on Ubuntu
-    runs-on: ubuntu-latest
+    name: Run on ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Ubuntu
+          - os: macos-latest
+            label: macOS
     steps:
       - name: Clone the code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -41,3 +49,10 @@ jobs:
         run: |
           go mod tidy
           make test
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-${{ matrix.os }}
+          path: cover.out
+          if-no-files-found: warn
