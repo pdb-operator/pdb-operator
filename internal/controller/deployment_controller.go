@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	k8sevents "k8s.io/client-go/tools/events"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -103,10 +104,19 @@ type DeploymentReconciler struct {
 	Events      *events.EventRecorder
 	PolicyCache *cache.PolicyCache
 	Config      *SharedConfig
+	// Clock is injectable for deterministic maintenance-window tests; defaults to real time.
+	Clock clock.PassiveClock
 
 	// Change detection to avoid unnecessary reconciliations
 	lastDeploymentState map[types.NamespacedName]string
 	mu                  sync.RWMutex
+}
+
+func (r *DeploymentReconciler) now() time.Time {
+	if r.Clock != nil {
+		return r.Clock.Now()
+	}
+	return time.Now()
 }
 
 // AvailabilityConfig holds the configuration for a deployment's availability requirements
@@ -116,9 +126,11 @@ type AvailabilityConfig struct {
 	MinAvailable      intstr.IntOrString
 	Description       string
 	MaintenanceWindow string
-	Source            string // "annotation", "policy", etc.
-	PolicyName        string // Name of the policy if from policy
-	Enforcement       string // Enforcement mode if from policy
+	// MaintenanceWindows carries structured windows from the matched PDBPolicy.
+	MaintenanceWindows []availabilityv1alpha1.MaintenanceWindow
+	Source             string // "annotation", "policy", etc.
+	PolicyName         string // Name of the policy if from policy
+	Enforcement        string // Enforcement mode if from policy
 }
 
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
@@ -444,7 +456,8 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		"reconcileID":       reconcileID,
 	})
 
-	return result, nil
+	// wake up proactively when a maintenance window is due to open
+	return applyMaintenanceRequeue(result, config, r.now()), nil
 }
 
 // getAvailabilityConfigWithCache gets configuration with the new priority logic
@@ -475,6 +488,11 @@ func (r *DeploymentReconciler) getAvailabilityConfigWithCache(ctx context.Contex
 	if finalConfig == nil {
 		logger.V(1).Info("No availability configuration found")
 		return nil, nil
+	}
+
+	// carry policy maintenance windows onto whichever config wins resolution
+	if matchedPolicy != nil {
+		finalConfig.MaintenanceWindows = matchedPolicy.Spec.MaintenanceWindows
 	}
 
 	return finalConfig, nil
@@ -1079,83 +1097,9 @@ func (r *DeploymentReconciler) cleanupDuplicatePDBs(ctx context.Context, deploym
 
 // Helper functions
 
-// isInMaintenanceWindow checks if currently in a maintenance window
-func (r *DeploymentReconciler) isInMaintenanceWindow(config *AvailabilityConfig, logger logr.Logger) bool {
-	if config.MaintenanceWindow == "" {
-		return false
-	}
-
-	// Cache key for maintenance window
-	cacheKey := fmt.Sprintf("maintenance-window-%s", config.MaintenanceWindow)
-
-	// Check cache first if available
-	if r.PolicyCache != nil {
-		if cachedResult, found := r.PolicyCache.GetMaintenanceWindow(cacheKey); found {
-			return cachedResult
-		}
-	}
-
-	// Parse maintenance window (format: "02:00-04:00 UTC")
-	parts := strings.Fields(config.MaintenanceWindow)
-	if len(parts) < 1 {
-		logger.Error(fmt.Errorf("invalid maintenance window format"),
-			"Expected format: 'HH:MM-HH:MM UTC'",
-			"got", config.MaintenanceWindow)
-		return false
-	}
-
-	timeRange := parts[0]
-	timezone := "UTC"
-	if len(parts) > 1 {
-		timezone = parts[1]
-	}
-
-	// Parse time range
-	timeParts := strings.Split(timeRange, "-")
-	if len(timeParts) != 2 {
-		logger.Error(fmt.Errorf("invalid time range format"),
-			"Expected format: 'HH:MM-HH:MM'",
-			"got", timeRange)
-		return false
-	}
-
-	location, err := time.LoadLocation(timezone)
-	if err != nil {
-		logger.Error(err, "Invalid timezone", "timezone", timezone)
-		return false
-	}
-
-	now := time.Now().In(location)
-
-	// Convert to today's time in the specified timezone
-	today := now.Format("2006-01-02")
-	todayStart, err := time.ParseInLocation("2006-01-02 15:04", fmt.Sprintf("%s %s", today, timeParts[0]), location)
-	if err != nil {
-		logger.Error(err, "Invalid start time format", "startTime", timeParts[0])
-		return false
-	}
-
-	todayEnd, err := time.ParseInLocation("2006-01-02 15:04", fmt.Sprintf("%s %s", today, timeParts[1]), location)
-	if err != nil {
-		logger.Error(err, "Invalid end time format", "endTime", timeParts[1])
-		return false
-	}
-
-	// Handle overnight maintenance windows
-	var result bool
-	if todayEnd.Before(todayStart) {
-		// Maintenance window spans midnight
-		result = now.After(todayStart) || now.Before(todayEnd)
-	} else {
-		result = now.After(todayStart) && now.Before(todayEnd)
-	}
-
-	// Cache the result for 1 minute if cache is available
-	if r.PolicyCache != nil {
-		r.PolicyCache.SetMaintenanceWindow(cacheKey, result, 1*time.Minute)
-	}
-
-	return result
+// isInMaintenanceWindow checks if currently in a maintenance window (annotation or policy).
+func (r *DeploymentReconciler) isInMaintenanceWindow(config *AvailabilityConfig, _ logr.Logger) bool {
+	return IsInMaintenanceWindow(config, r.now())
 }
 
 // removePDBTemporarily disables PDB during maintenance window
@@ -1325,7 +1269,7 @@ func (r *DeploymentReconciler) calculateDeploymentFingerprint(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	config *AvailabilityConfig,
-) string {
+) (string, error) {
 	h := sha256.New()
 
 	// Include deployment generation (changes on spec updates)
@@ -1384,7 +1328,9 @@ func (r *DeploymentReconciler) calculateDeploymentFingerprint(
 	}
 
 	currentPDB := &policyv1.PodDisruptionBudget{}
-	if err := r.Get(ctx, pdbName, currentPDB); err == nil {
+	err := r.Get(ctx, pdbName, currentPDB)
+	switch {
+	case err == nil:
 		// PDB exists - include its current spec
 		_, _ = h.Write([]byte("pdb:exists=true"))
 		_, _ = fmt.Fprintf(h, "pdb:minAvailable=%s", currentPDB.Spec.MinAvailable.String())
@@ -1393,9 +1339,12 @@ func (r *DeploymentReconciler) calculateDeploymentFingerprint(
 				_, _ = fmt.Fprintf(h, "pdb:selector:%s=%s", key, value)
 			}
 		}
-	} else {
+	case errors.IsNotFound(err):
 		// PDB doesn't exist - include marker so fingerprint changes when PDB is deleted
 		_, _ = h.Write([]byte("pdb:exists=false"))
+	default:
+		// transient API/cache error - propagate so the reconciler requeues instead of acting on a wrong fingerprint
+		return "", err
 	}
 
 	// Also include expected PDB state based on configuration
@@ -1409,7 +1358,7 @@ func (r *DeploymentReconciler) calculateDeploymentFingerprint(
 		}
 	}
 
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // hasDeploymentStateChanged checks if the deployment state has changed
@@ -1431,7 +1380,10 @@ func (r *DeploymentReconciler) hasDeploymentStateChanged(
 		Namespace: deployment.Namespace,
 	}
 
-	currentFingerprint := r.calculateDeploymentFingerprint(ctx, deployment, config)
+	currentFingerprint, err := r.calculateDeploymentFingerprint(ctx, deployment, config)
+	if err != nil {
+		return false, err
+	}
 
 	lastFingerprint, exists := r.lastDeploymentState[key]
 	if !exists {
@@ -1476,7 +1428,10 @@ func (r *DeploymentReconciler) updateDeploymentState(
 		Namespace: deployment.Namespace,
 	}
 
-	fingerprint := r.calculateDeploymentFingerprint(ctx, deployment, config)
+	fingerprint, err := r.calculateDeploymentFingerprint(ctx, deployment, config)
+	if err != nil {
+		return err
+	}
 
 	r.lastDeploymentState[key] = fingerprint
 	return nil

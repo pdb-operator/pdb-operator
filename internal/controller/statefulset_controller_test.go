@@ -459,7 +459,8 @@ func TestStatefulSetReconciler_MaintenanceWindow(t *testing.T) {
 	// Outside maintenance window: PDB created normally
 	result, err = reconciler.Reconcile(ctx, req)
 	assert.NoError(t, err)
-	assert.Equal(t, reconcile.Result{}, result)
+	// Window is ~2h ahead, so requeue is capped to wake before it opens
+	assert.Equal(t, maxMaintenanceRequeue, result.RequeueAfter)
 
 	pdb := &policyv1.PodDisruptionBudget{}
 	err = tr.Client.Get(ctx, types.NamespacedName{
