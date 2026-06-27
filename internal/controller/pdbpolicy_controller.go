@@ -239,7 +239,7 @@ func (r *PDBPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		policy.Finalizers = append(policy.Finalizers, availabilityPolicyFinalizer)
 		if err := RetryUpdateWithBackoff(ctx, r.Client, policy, DefaultRetryConfig()); err != nil {
 			reconcileErr = err
-			logger.Error(err, "Failed to remove finalizer after retries", map[string]any{
+			logger.Error(err, "Failed to add finalizer after retries", map[string]any{
 				"error_type": GetErrorType(err),
 			})
 			return ctrl.Result{}, err
