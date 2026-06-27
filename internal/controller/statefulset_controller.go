@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	k8sevents "k8s.io/client-go/tools/events"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -57,8 +58,17 @@ type StatefulSetReconciler struct {
 	Events      *events.EventRecorder
 	PolicyCache *cache.PolicyCache
 	Config      *SharedConfig
+	// Clock is injectable for deterministic maintenance-window tests; defaults to real time.
+	Clock clock.PassiveClock
 
 	tracker *WorkloadStateTracker
+}
+
+func (r *StatefulSetReconciler) now() time.Time {
+	if r.Clock != nil {
+		return r.Clock.Now()
+	}
+	return time.Now()
 }
 
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
@@ -183,7 +193,12 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	stateChanged := r.tracker.HasStateChanged(ctx, r.Client, w, config)
+	stateChanged, err := r.tracker.HasStateChanged(ctx, r.Client, w, config)
+	if err != nil {
+		reconcileErr = err
+		logger.Error(err, "Failed to check statefulset state changes, proceeding with reconciliation", map[string]any{})
+		stateChanged = true
+	}
 
 	logger.V(1).Info("Change detection result",
 		"stateChanged", stateChanged,
@@ -229,7 +244,7 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		attribute.String("source", config.Source),
 	)
 
-	if IsInMaintenanceWindow(config, r.PolicyCache, log.FromContext(ctx)) {
+	if IsInMaintenanceWindow(config, r.now()) {
 		logger.Info("In maintenance window, temporarily relaxing PDB", map[string]any{
 			"maintenanceWindow": config.MaintenanceWindow,
 		})
@@ -257,7 +272,9 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	).Set(1)
 
 	metrics.UpdateComplianceStatus(sts.Namespace, sts.Name, true, "managed")
-	r.tracker.UpdateState(ctx, r.Client, w, config)
+	if err := r.tracker.UpdateState(ctx, r.Client, w, config); err != nil {
+		logger.Error(err, "Failed to update statefulset state cache", map[string]any{})
+	}
 
 	logger.Info("Successfully reconciled PDB", map[string]any{
 		"availabilityClass": config.AvailabilityClass,
@@ -265,7 +282,8 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		"reconcileID":       reconcileID,
 	})
 
-	return result, nil
+	// wake up proactively when a maintenance window is due to open
+	return applyMaintenanceRequeue(result, config, r.now()), nil
 }
 
 // policyMatchesStatefulSet checks if a policy matches a StatefulSet.

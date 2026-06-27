@@ -467,17 +467,20 @@ func TestCalculateDeploymentFingerprint(t *testing.T) {
 		lastDeploymentState: make(map[types.NamespacedName]string),
 		mu:                  sync.RWMutex{},
 	}
-	fingerprint := reconciler.calculateDeploymentFingerprint(ctx, deployment, config)
+	fingerprint, err := reconciler.calculateDeploymentFingerprint(ctx, deployment, config)
+	assert.NoError(t, err)
 	assert.NotEmpty(t, fingerprint, "Fingerprint should not be empty")
 
 	// Same deployment should produce same fingerprint
-	fingerprint2 := reconciler.calculateDeploymentFingerprint(ctx, deployment, config)
+	fingerprint2, err := reconciler.calculateDeploymentFingerprint(ctx, deployment, config)
+	assert.NoError(t, err)
 	assert.Equal(t, fingerprint, fingerprint2, "Same deployment should produce same fingerprint")
 
 	// Different deployment should produce different fingerprint
 	deployment2 := deployment.DeepCopy()
 	deployment2.Spec.Replicas = func() *int32 { i := int32(5); return &i }()
-	fingerprint3 := reconciler.calculateDeploymentFingerprint(ctx, deployment2, config)
+	fingerprint3, err := reconciler.calculateDeploymentFingerprint(ctx, deployment2, config)
+	assert.NoError(t, err)
 	assert.NotEqual(t, fingerprint, fingerprint3, "Different deployment should produce different fingerprint")
 }
 
