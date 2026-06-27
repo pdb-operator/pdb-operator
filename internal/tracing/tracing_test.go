@@ -60,17 +60,17 @@ func TestInitTracingWithInvalidJaegerEndpoint(t *testing.T) {
 }
 
 func TestInitTracingWithOTLPEndpoint(t *testing.T) {
-	// Set OTLP endpoint (connection will fail but exporter should be created)
+	// Set OTLP endpoint; exporter creation is lazy and does not dial.
 	_ = os.Setenv("OTLP_ENDPOINT", "localhost:4317")
 	defer func() { _ = os.Unsetenv("OTLP_ENDPOINT") }()
 
+	// Regression for the schema-URL conflict: the resource is built via
+	// resource.Merge(resource.Default(), resource.NewWithAttributes(semconv.SchemaURL, ...)).
+	// If the semconv import's schema URL differs from the SDK's, Merge errors.
 	cleanup, err := InitTracing(context.Background(), "test-service")
-
-	// Should succeed - exporter creation doesn't require connection
-	if err == nil {
-		require.NotNil(t, cleanup)
-		cleanup()
-	}
+	require.NoError(t, err)
+	require.NotNil(t, cleanup)
+	cleanup()
 }
 
 func TestStartSpan(t *testing.T) {
