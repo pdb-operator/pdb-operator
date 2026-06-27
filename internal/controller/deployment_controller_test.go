@@ -408,8 +408,8 @@ func TestDeploymentReconciler_MaintenanceWindow(t *testing.T) {
 	// Outside maintenance window, should create PDB normally
 	result, err = reconciler.Reconcile(ctx, req)
 	assert.NoError(t, err)
-	// Should not requeue for maintenance since we're outside the window
-	assert.Equal(t, reconcile.Result{}, result)
+	// Window is ~2h ahead, so requeue is capped to wake before it opens
+	assert.Equal(t, maxMaintenanceRequeue, result.RequeueAfter)
 
 	// Verify PDB was created
 	pdb := &policyv1.PodDisruptionBudget{}

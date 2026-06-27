@@ -121,26 +121,34 @@ func NewWorkloadStateTracker() *WorkloadStateTracker {
 	return &WorkloadStateTracker{state: make(map[types.NamespacedName]string)}
 }
 
-func (t *WorkloadStateTracker) HasStateChanged(ctx context.Context, c client.Client, w WorkloadAccessor, config *AvailabilityConfig) bool {
+func (t *WorkloadStateTracker) HasStateChanged(ctx context.Context, c client.Client, w WorkloadAccessor, config *AvailabilityConfig) (bool, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	if t.state == nil {
-		return true
+		return true, nil
 	}
 	key := types.NamespacedName{Name: w.GetName(), Namespace: w.GetNamespace()}
-	current := calculateWorkloadFingerprint(ctx, c, w, config)
+	current, err := calculateWorkloadFingerprint(ctx, c, w, config)
+	if err != nil {
+		return false, err
+	}
 	last, exists := t.state[key]
-	return !exists || current != last
+	return !exists || current != last, nil
 }
 
-func (t *WorkloadStateTracker) UpdateState(ctx context.Context, c client.Client, w WorkloadAccessor, config *AvailabilityConfig) {
+func (t *WorkloadStateTracker) UpdateState(ctx context.Context, c client.Client, w WorkloadAccessor, config *AvailabilityConfig) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.state == nil {
 		t.state = make(map[types.NamespacedName]string)
 	}
 	key := types.NamespacedName{Name: w.GetName(), Namespace: w.GetNamespace()}
-	t.state[key] = calculateWorkloadFingerprint(ctx, c, w, config)
+	current, err := calculateWorkloadFingerprint(ctx, c, w, config)
+	if err != nil {
+		return err
+	}
+	t.state[key] = current
+	return nil
 }
 
 func (t *WorkloadStateTracker) ClearState(w WorkloadAccessor) {
@@ -149,7 +157,7 @@ func (t *WorkloadStateTracker) ClearState(w WorkloadAccessor) {
 	delete(t.state, types.NamespacedName{Name: w.GetName(), Namespace: w.GetNamespace()})
 }
 
-func calculateWorkloadFingerprint(ctx context.Context, c client.Client, w WorkloadAccessor, config *AvailabilityConfig) string {
+func calculateWorkloadFingerprint(ctx context.Context, c client.Client, w WorkloadAccessor, config *AvailabilityConfig) (string, error) {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "generation:%d", w.GetGeneration())
 	_, _ = fmt.Fprintf(h, "replicas:%d", w.GetReplicas())
@@ -195,8 +203,10 @@ func calculateWorkloadFingerprint(ctx context.Context, c client.Client, w Worklo
 				_, _ = fmt.Fprintf(h, "pdb:selector:%s=%s", key, value)
 			}
 		}
-	} else {
+	} else if errors.IsNotFound(err) {
 		_, _ = h.Write([]byte("pdb:exists=false"))
+	} else {
+		return "", err
 	}
 
 	if config != nil {
@@ -208,7 +218,7 @@ func calculateWorkloadFingerprint(ctx context.Context, c client.Client, w Worklo
 		}
 	}
 
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func IsValidAvailabilityClass(class availabilityv1alpha1.AvailabilityClass) bool {
@@ -519,7 +529,12 @@ func GetAvailabilityConfigWithCache(ctx context.Context, c client.Client, policy
 	if err != nil {
 		return nil, err
 	}
-	return ResolveConfiguration(w, annotationConfig, policyConfig, matchedPolicy, eventsRecorder, logger), nil
+	finalConfig := ResolveConfiguration(w, annotationConfig, policyConfig, matchedPolicy, eventsRecorder, logger)
+	// carry policy maintenance windows onto whichever config wins resolution
+	if finalConfig != nil && matchedPolicy != nil {
+		finalConfig.MaintenanceWindows = matchedPolicy.Spec.MaintenanceWindows
+	}
+	return finalConfig, nil
 }
 
 func ResolveConfiguration(
@@ -613,55 +628,6 @@ func ResolveConfiguration(
 		metrics.RecordEnforcementDecision("unknown", "defaulting-to-policy", w.GetNamespace())
 		return policyConfig
 	}
-}
-
-func IsInMaintenanceWindow(config *AvailabilityConfig, policyCache *cache.PolicyCache, _ logr.Logger) bool {
-	if config.MaintenanceWindow == "" {
-		return false
-	}
-	cacheKey := fmt.Sprintf("maintenance-window-%s", config.MaintenanceWindow)
-	if policyCache != nil {
-		if cachedResult, found := policyCache.GetMaintenanceWindow(cacheKey); found {
-			return cachedResult
-		}
-	}
-	parts := strings.Fields(config.MaintenanceWindow)
-	if len(parts) < 1 {
-		return false
-	}
-	timeRange := parts[0]
-	timezone := "UTC"
-	if len(parts) > 1 {
-		timezone = parts[1]
-	}
-	timeParts := strings.Split(timeRange, "-")
-	if len(timeParts) != 2 {
-		return false
-	}
-	location, err := time.LoadLocation(timezone)
-	if err != nil {
-		return false
-	}
-	now := time.Now().In(location)
-	today := now.Format("2006-01-02")
-	todayStart, err := time.ParseInLocation("2006-01-02 15:04", fmt.Sprintf("%s %s", today, timeParts[0]), location)
-	if err != nil {
-		return false
-	}
-	todayEnd, err := time.ParseInLocation("2006-01-02 15:04", fmt.Sprintf("%s %s", today, timeParts[1]), location)
-	if err != nil {
-		return false
-	}
-	var result bool
-	if todayEnd.Before(todayStart) {
-		result = now.After(todayStart) || now.Before(todayEnd)
-	} else {
-		result = now.After(todayStart) && now.Before(todayEnd)
-	}
-	if policyCache != nil {
-		policyCache.SetMaintenanceWindow(cacheKey, result, 1*time.Minute)
-	}
-	return result
 }
 
 func RemovePDBTemporarily(ctx context.Context, c client.Client, w WorkloadAccessor, logger logr.Logger) error {

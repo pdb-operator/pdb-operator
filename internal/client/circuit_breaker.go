@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -708,14 +709,5 @@ func (w *adaptiveStatusWriter) Apply(ctx context.Context, obj runtime.ApplyConfi
 // Helper functions
 
 func sortDurations(durations []time.Duration) {
-	// Simple insertion sort for small arrays
-	for i := 1; i < len(durations); i++ {
-		key := durations[i]
-		j := i - 1
-		for j >= 0 && durations[j] > key {
-			durations[j+1] = durations[j]
-			j--
-		}
-		durations[j+1] = key
-	}
+	slices.Sort(durations)
 }
