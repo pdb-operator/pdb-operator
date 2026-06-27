@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-27
+
+### Added
+- Proactive maintenance-window requeue: a workload with a configured window now wakes at the next window start (capped to an hourly heartbeat) so its PDB is relaxed on time without waiting for an unrelated event (#46)
+
+### Changed
+- Circuit-breaker latency percentiles sort via the standard library `slices.Sort` (O(n log n)) instead of a hand-rolled insertion sort (#47)
+
+### Fixed
+- Policy-level maintenance windows are now evaluated. Windows defined in a `PDBPolicy` (`spec.maintenanceWindows`) were silently ignored: the resolved configuration dropped them and only the workload `pdboperator.io/maintenance-window` annotation was parsed. Structured windows (timezone, `daysOfWeek`, multiple windows, and overnight spans) are now honored for both Deployments and StatefulSets (#45)
+- `make deploy` no longer blocks `PDBPolicy` creation. The default kustomize config registered the admission webhooks but ran the manager without `--enable-webhook`, so every `PDBPolicy` write failed with "connection refused"; the default now enables the webhook server (#51)
+- OpenTelemetry tracing now initializes instead of failing at startup. The `semconv` schema URL (1.39.0) conflicted with the SDK's `resource.Default()` (1.41.0), silently disabling tracing; the import is aligned to v1.41.0 (#52)
+- The workload state tracker no longer swallows transient API errors. A failed PDB `Get` during change detection was treated as "PDB absent"; it now propagates so the reconciler requeues with backoff instead of acting on a stale fingerprint (#49)
+- Corrected the misleading "Failed to remove finalizer" message logged while adding the `PDBPolicy` finalizer (#48)
+
+### Testing
+- Maintenance-window evaluation reads time through an injectable clock (`k8s.io/utils/clock`), making active/inactive window behavior deterministically testable (#50)
+
 ## [0.2.2] - 2026-06-21
 
 ### Fixed
