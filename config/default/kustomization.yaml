@@ -31,6 +31,15 @@ patches:
 - path: manager_webhook_patch.yaml
   target:
     kind: Deployment
+# [WEBHOOK] Enable the webhook server so the registered admission webhooks are served.
+# Pairs with ../webhook + ../certmanager + the cert mount above; comment out together to disable.
+- target:
+    kind: Deployment
+    name: controller-manager
+  patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --enable-webhook
 
 replacements:
 # [CERTMANAGER] cert-manager CA injection for webhooks
