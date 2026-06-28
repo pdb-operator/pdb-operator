@@ -6,7 +6,7 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/google/uuid v1.6.0
 	github.com/onsi/ginkgo/v2 v2.28.3
-	github.com/onsi/gomega v1.41.0
+	github.com/onsi/gomega v1.42.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sony/gobreaker/v2 v2.4.0
 	github.com/stretchr/testify v1.11.1
