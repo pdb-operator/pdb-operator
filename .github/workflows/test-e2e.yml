@@ -40,9 +40,12 @@ jobs:
           go-version-file: go.mod
 
       - name: Install kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
-        with:
-          install_only: true
+        env:
+          KIND_VERSION: v0.32.0
+        run: |
+          curl -fsSLo ./kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
 
       - name: Verify kind installation
         run: kind version
