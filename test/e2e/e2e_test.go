@@ -565,7 +565,18 @@ spec:
 
 		It("should block a node drain that would violate the StatefulSet PDB", func() {
 			const stsName = "e2e-sts-drain"
-			cleanupStatefulSet(stsName)
+
+			// removeDrainResources clears this spec's workload, PDB, Service, and PVCs; idempotent.
+			removeDrainResources := func() {
+				cleanupStatefulSet(stsName)
+				cmd := exec.Command("kubectl", "delete", "service", stsName, "-n", testNamespace,
+					"--ignore-not-found", "--wait=false")
+				_, _ = utils.Run(cmd)
+				cmd = exec.Command("kubectl", "delete", "pvc", "-l", "app="+stsName, "-n", testNamespace,
+					"--ignore-not-found", "--wait=false")
+				_, _ = utils.Run(cmd)
+			}
+			removeDrainResources()
 
 			By("getting the node name to drain")
 			cmd := exec.Command("kubectl", "get", "nodes",
@@ -578,15 +589,19 @@ spec:
 			// Cleanup restores the node and removes the workload, service, and PVCs even on failure.
 			DeferCleanup(func() {
 				By("uncordoning the node")
-				cmd := exec.Command("kubectl", "uncordon", nodeName)
-				_, _ = utils.Run(cmd)
-				cleanupStatefulSet(stsName)
-				cmd = exec.Command("kubectl", "delete", "service", stsName, "-n", testNamespace,
-					"--ignore-not-found", "--wait=false")
-				_, _ = utils.Run(cmd)
-				cmd = exec.Command("kubectl", "delete", "pvc", "-l", "app="+stsName, "-n", testNamespace,
-					"--ignore-not-found", "--wait=false")
-				_, _ = utils.Run(cmd)
+				// Retry and confirm the node is schedulable so a stuck cordon cannot cascade into later specs.
+				verifyNodeSchedulable := func(g Gomega) {
+					cmd := exec.Command("kubectl", "uncordon", nodeName)
+					_, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred(), "Failed to uncordon node")
+					cmd = exec.Command("kubectl", "get", "node", nodeName,
+						"-o", "jsonpath={.spec.unschedulable}")
+					output, err := utils.Run(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(BeEmpty(), "node should be schedulable after uncordon")
+				}
+				Eventually(verifyNodeSchedulable).Should(Succeed())
+				removeDrainResources()
 			})
 
 			By("creating a headless Service for the StatefulSet")
@@ -680,7 +695,7 @@ spec:
 					"-o", "jsonpath={.status.disruptionsAllowed}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "PDB should exist")
-				g.Expect(output).To(Equal("0"), "PDB should allow no disruptions at 75%% of 3 replicas")
+				g.Expect(output).To(Equal("0"), "PDB should allow no disruptions at 75% of 3 replicas")
 			}).Should(Succeed())
 
 			By("draining the node and asserting the PDB blocks eviction")
