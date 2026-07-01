@@ -562,6 +562,137 @@ spec:
 			DeferCleanup(func() { cleanupStatefulSet(stsName) })
 			verifyScaleDownCleansUpPDB("StatefulSet", "statefulset", stsName, testNamespace)
 		})
+
+		It("should block a node drain that would violate the StatefulSet PDB", func() {
+			const stsName = "e2e-sts-drain"
+			cleanupStatefulSet(stsName)
+
+			By("getting the node name to drain")
+			cmd := exec.Command("kubectl", "get", "nodes",
+				"-o", "jsonpath={.items[0].metadata.name}")
+			nodeName, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to get node name")
+			nodeName = strings.TrimSpace(nodeName)
+			Expect(nodeName).NotTo(BeEmpty(), "node name must not be empty")
+
+			// Cleanup restores the node and removes the workload, service, and PVCs even on failure.
+			DeferCleanup(func() {
+				By("uncordoning the node")
+				cmd := exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd)
+				cleanupStatefulSet(stsName)
+				cmd = exec.Command("kubectl", "delete", "service", stsName, "-n", testNamespace,
+					"--ignore-not-found", "--wait=false")
+				_, _ = utils.Run(cmd)
+				cmd = exec.Command("kubectl", "delete", "pvc", "-l", "app="+stsName, "-n", testNamespace,
+					"--ignore-not-found", "--wait=false")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("creating a headless Service for the StatefulSet")
+			svcYAML := fmt.Sprintf(`
+apiVersion: v1
+kind: Service
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app: %s
+spec:
+  clusterIP: None
+  selector:
+    app: %s
+  ports:
+  - name: redis
+    port: 6379
+`, stsName, testNamespace, stsName, stsName)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(svcYAML))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create headless Service")
+
+			By("creating a StatefulSet with serviceName, volumeClaimTemplates, and a readiness probe")
+			stsYAML := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    pdboperator.io/availability-class: high-availability
+  labels:
+    app: %s
+spec:
+  serviceName: %s
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: %s
+  template:
+    metadata:
+      labels:
+        app: %s
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: redis
+        image: redis:alpine
+        ports:
+        - name: redis
+          containerPort: 6379
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 2
+          periodSeconds: 3
+        volumeMounts:
+        - name: data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: %s
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 128Mi
+`, stsName, testNamespace, stsName, stsName, stsName, stsName, stsName)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(stsYAML))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create StatefulSet")
+
+			By("waiting for all replicas to be Ready")
+			cmd = exec.Command("kubectl", "rollout", "status", "statefulset", stsName,
+				"-n", testNamespace, "--timeout=180s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "StatefulSet replicas did not become Ready")
+
+			By("waiting for the PDB to report zero allowed disruptions")
+			// high-availability = 75% minAvailable; 3 replicas leaves no room for a voluntary eviction.
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", stsName+"-pdb",
+					"-n", testNamespace,
+					"-o", "jsonpath={.status.disruptionsAllowed}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "PDB should exist")
+				g.Expect(output).To(Equal("0"), "PDB should allow no disruptions at 75%% of 3 replicas")
+			}).Should(Succeed())
+
+			By("draining the node and asserting the PDB blocks eviction")
+			// Scope the drain to this StatefulSet so the single-node kind cluster stays usable.
+			cmd = exec.Command("kubectl", "drain", nodeName,
+				"--ignore-daemonsets", "--delete-emptydir-data",
+				"--pod-selector", "app="+stsName, "--timeout=90s")
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred(), "drain should fail because the PDB blocks eviction")
+			Expect(output).To(ContainSubstring("disruption budget"),
+				"drain should report a PodDisruptionBudget violation")
+		})
 	})
 
 	Context("Deployment PDB management", func() {
