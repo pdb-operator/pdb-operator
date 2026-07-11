@@ -15,19 +15,15 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            const creator = context.payload.pull_request.user.login;
-            const { data: pulls } = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'all',
-              per_page: 2,
-            });
-            const isFirstPR = pulls.filter(p => p.user.login === creator).length <= 1;
-            if (isFirstPR) {
+            const pr = context.payload.pull_request;
+            const creator = pr.user.login;
+            // GitHub computes association; only greet genuine first-timers, never maintainers or bots
+            const firstTimer = ['FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE'].includes(pr.author_association);
+            if (firstTimer && !creator.endsWith('[bot]')) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
+                issue_number: pr.number,
                 body: `Welcome @${creator}! Thank you for your first contribution to pdb-operator! 🎉\n\nA maintainer will review your PR shortly. Please make sure your commits are signed off (\`git commit -s\`) for the DCO check.`,
               });
             }
