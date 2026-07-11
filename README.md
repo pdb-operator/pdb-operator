@@ -14,8 +14,8 @@
   <a href="https://github.com/pdb-operator/pdb-operator/actions/workflows/test.yml?query=branch%3Amain">
     <img alt="Build Status" src="https://img.shields.io/github/actions/workflow/status/pdb-operator/pdb-operator/test.yml?branch=main&style=for-the-badge&label=tests">
   </a>
-  <a href="https://goreportcard.com/report/github.com/pdb-operator/pdb-operator">
-    <img alt="Go Report Card" src="https://goreportcard.com/badge/github.com/pdb-operator/pdb-operator?style=for-the-badge">
+  <a href="https://github.com/pdb-operator/pdb-operator/actions/workflows/lint.yml?query=branch%3Amain">
+    <img alt="Lint Status" src="https://img.shields.io/github/actions/workflow/status/pdb-operator/pdb-operator/lint.yml?branch=main&style=for-the-badge&label=lint">
   </a>
   <a href="https://github.com/pdb-operator/pdb-operator/releases">
     <img alt="Latest Release" src="https://img.shields.io/github/v/release/pdb-operator/pdb-operator?include_prereleases&style=for-the-badge">
