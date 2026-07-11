@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-11
+
+### Changed
+- Upgraded Kubernetes libraries to v0.36.2 and controller-runtime to v0.24.1, and migrated the API package off the deprecated `scheme.Builder` to the apimachinery `runtime.NewSchemeBuilder` registration pattern (#61)
+
+### Security
+- Bumped Go to 1.26.5 to resolve GO-2026-5856 (CVE-2026-42505) in the standard library `crypto/tls` (#67)
+
+### Testing
+- Bumped Ginkgo to v2.32.0 (#65) and Gomega to v1.42.1 (#64)
+
 ## [0.3.0] - 2026-06-27
 
 ### Added
@@ -96,7 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distroless container base image (`gcr.io/distroless/static:nonroot`)
 - Comprehensive test suite with 71-93% coverage across packages
 
-[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pdb-operator/pdb-operator/compare/v0.1.1...v0.2.0
