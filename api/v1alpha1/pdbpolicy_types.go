@@ -231,10 +231,6 @@ type PDBPolicyList struct {
 	Items           []PDBPolicy `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&PDBPolicy{}, &PDBPolicyList{})
-}
-
 // GetMinAvailableForClass returns the default minAvailable value for a given availability class.
 func GetMinAvailableForClass(class AvailabilityClass, function WorkloadFunction) intstr.IntOrString {
 	baseValues := map[AvailabilityClass]string{
