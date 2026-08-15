@@ -87,6 +87,14 @@ var (
 		[]string{"namespace", "availability_class"},
 	)
 
+	ManagedLeaderWorkerSets = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pdb_operator_leaderworkersets_managed",
+			Help: "Current number of leaderworkersets being managed",
+		},
+		[]string{"namespace", "availability_class"},
+	)
+
 	PDBComplianceStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "pdb_operator_compliance_status",
@@ -243,6 +251,7 @@ func init() {
 		ReconciliationErrors,
 		ManagedDeployments,
 		ManagedStatefulSets,
+		ManagedLeaderWorkerSets,
 		PDBComplianceStatus,
 		AvailabilityPoliciesActive,
 		MaintenanceWindowActive,

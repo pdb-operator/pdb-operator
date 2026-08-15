@@ -166,6 +166,29 @@ metadata:
 
 Security workloads (`pdboperator.io/workload-function: security`) are automatically boosted: `non-critical` becomes 50%, `standard` becomes 75%.
 
+## Group-Aware PDBs for Multi-Host Inference (LeaderWorkerSet)
+
+When the [LeaderWorkerSet](https://lws.sigs.k8s.io/) CRD (`leaderworkerset.x-k8s.io/v1`) is installed, the operator also manages PDBs for LWS workloads such as multi-host vLLM or SGLang deployments. Support is detected at startup; without the CRD the operator runs unchanged.
+
+LWS groups restart as a unit (default `RecreateGroupOnPodRestart`): evicting one pod takes down all `size` pods of its group. A pod-counting percentage both under-protects capacity and can deadlock node drains, so the operator quantizes the budget to whole groups:
+
+```
+desiredGroups = ceil(class% x replicas), clamped to replicas - 1
+minAvailable  = desiredGroups x size
+```
+
+For `replicas: 4, size: 8` under `mission-critical` (90%) this yields `minAvailable: 24`: exactly one group may be disrupted at a time, and a drain always makes progress. Granularity is whole groups, so a 4-group set has only 4 protection steps.
+
+Special cases:
+
+| Shape | Behavior |
+|-------|----------|
+| `replicas: 1` | No PDB is created (any budget would permanently block drains); a Warning event explains why |
+| `size: 1` | Plain pod-level semantics, same as a Deployment |
+| `custom` with absolute `minAvailable` | Rounded up to the next whole group |
+
+The PDB selects on the `leaderworkerset.sigs.k8s.io/name` label, covering leader and worker pods. LWS implements each set as a leader StatefulSet plus per-group worker StatefulSets; the operator's StatefulSet controller skips those (same label) so pods never match more than one PDB, which would make the eviction API reject every eviction.
+
 ## Enforcement Modes
 
 | Mode | Behavior |
@@ -218,6 +241,7 @@ spec:
 | `pdb_operator_pdbs_updated_total` | Counter | PDBs updated |
 | `pdb_operator_pdbs_deleted_total` | Counter | PDBs deleted |
 | `pdb_operator_deployments_managed` | Gauge | Managed deployments per namespace/class |
+| `pdb_operator_leaderworkersets_managed` | Gauge | Managed LeaderWorkerSets per namespace/class |
 | `pdb_operator_policies_active` | Gauge | Active policies per namespace |
 | `pdb_operator_compliance_status` | Gauge | Deployment compliance status |
 | `pdb_operator_maintenance_window_active` | Gauge | Maintenance window active |
