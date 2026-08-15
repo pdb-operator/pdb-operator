@@ -317,6 +317,15 @@ func UpdateManagedStatefulSets(counts map[string]map[string]int) {
 	}
 }
 
+func UpdateManagedLeaderWorkerSets(counts map[string]map[string]int) {
+	ManagedLeaderWorkerSets.Reset()
+	for namespace, classCounts := range counts {
+		for class, count := range classCounts {
+			ManagedLeaderWorkerSets.WithLabelValues(namespace, class).Set(float64(count))
+		}
+	}
+}
+
 func UpdateComplianceStatus(namespace, deployment string, compliant bool, reason string) {
 	value := 0.0
 	if compliant {

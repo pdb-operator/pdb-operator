@@ -35,6 +35,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -343,7 +344,8 @@ func main() {
 		os.Exit(1)
 	}
 	// Register LeaderWorkerSet controller only when the CRD is installed
-	if checkLeaderWorkerSetAvailable(mgr.GetConfig()) {
+	lwsEnabled := checkLeaderWorkerSetAvailable(mgr.GetConfig())
+	if lwsEnabled {
 		if err := (&pdbcontroller.LeaderWorkerSetReconciler{
 			Client:      circuitBreakerClient,
 			Scheme:      mgr.GetScheme(),
@@ -471,7 +473,7 @@ func main() {
 	case synced := <-cacheSynced:
 		if synced {
 			setupLog.Info("Cache synced, starting metrics updater")
-			go startMetricsUpdater(bgCtx, circuitBreakerClient, policyCache)
+			go startMetricsUpdater(bgCtx, circuitBreakerClient, policyCache, lwsEnabled)
 		} else {
 			setupLog.Error(nil, "Failed to sync cache, metrics updater will not start")
 		}
@@ -532,7 +534,7 @@ func (gsm *GracefulShutdownManager) runPreShutdownHooks(ctx context.Context) {
 }
 
 // startMetricsUpdater periodically updates global metrics
-func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.PolicyCache) {
+func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.PolicyCache, lwsEnabled bool) {
 	select {
 	case <-time.After(5 * time.Second):
 	case <-ctx.Done():
@@ -550,7 +552,7 @@ func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.
 		}()
 
 		if c != nil {
-			updateGlobalMetrics(ctx, c)
+			updateGlobalMetrics(ctx, c, lwsEnabled)
 		}
 		if pCache != nil {
 			metrics.UpdateCacheMetrics(pCache.GetStats())
@@ -570,7 +572,20 @@ func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.
 	}
 }
 
-func updateGlobalMetrics(ctx context.Context, c client.Client) {
+// countByClass accumulates a namespace/class count from an availability-class annotation.
+func countByClass(counts map[string]map[string]int, namespace string, annotations map[string]string) bool {
+	class, exists := annotations[pdbcontroller.AnnotationAvailabilityClass]
+	if !exists {
+		return false
+	}
+	if counts[namespace] == nil {
+		counts[namespace] = make(map[string]int)
+	}
+	counts[namespace][class]++
+	return true
+}
+
+func updateGlobalMetrics(ctx context.Context, c client.Client, lwsEnabled bool) {
 	ctx = logging.WithCorrelationID(ctx)
 	ctx = logging.WithOperation(ctx, "metrics-update")
 
@@ -586,19 +601,49 @@ func updateGlobalMetrics(ctx context.Context, c client.Client) {
 	managedCount := 0
 
 	for _, deployment := range deploymentList.Items {
-		if deployment.Annotations != nil {
-			if class, exists := deployment.Annotations[pdbcontroller.AnnotationAvailabilityClass]; exists {
-				namespace := deployment.Namespace
-				if deploymentCounts[namespace] == nil {
-					deploymentCounts[namespace] = make(map[string]int)
-				}
-				deploymentCounts[namespace][class]++
-				managedCount++
-			}
+		if countByClass(deploymentCounts, deployment.Namespace, deployment.Annotations) {
+			managedCount++
 		}
 	}
 
 	metrics.UpdateManagedDeployments(deploymentCounts)
+
+	statefulSetList := &appsv1.StatefulSetList{}
+	if err := c.List(ctx, statefulSetList); err != nil {
+		logger.Error(err, "Failed to list statefulsets for metrics")
+		return
+	}
+
+	statefulSetCounts := make(map[string]map[string]int)
+	for _, sts := range statefulSetList.Items {
+		// LWS-internal StatefulSets are disruption-managed at the LeaderWorkerSet level
+		if _, partOfLWS := sts.Labels[pdbcontroller.LWSSetNameLabelKey]; partOfLWS {
+			continue
+		}
+		if countByClass(statefulSetCounts, sts.Namespace, sts.Annotations) {
+			managedCount++
+		}
+	}
+
+	metrics.UpdateManagedStatefulSets(statefulSetCounts)
+
+	if lwsEnabled {
+		lwsList := &unstructured.UnstructuredList{}
+		lwsList.SetGroupVersionKind(pdbcontroller.LWSGVK.GroupVersion().WithKind(pdbcontroller.LWSGVK.Kind + "List"))
+		if err := c.List(ctx, lwsList); err != nil {
+			logger.Error(err, "Failed to list leaderworkersets for metrics")
+			return
+		}
+
+		lwsCounts := make(map[string]map[string]int)
+		for i := range lwsList.Items {
+			if countByClass(lwsCounts, lwsList.Items[i].GetNamespace(), lwsList.Items[i].GetAnnotations()) {
+				managedCount++
+			}
+		}
+
+		metrics.UpdateManagedLeaderWorkerSets(lwsCounts)
+	}
 
 	policyList := &availabilityv1alpha1.PDBPolicyList{}
 	if err := c.List(ctx, policyList); err != nil {
@@ -614,7 +659,7 @@ func updateGlobalMetrics(ctx context.Context, c client.Client) {
 	metrics.UpdateActivePoliciesCount(policyCounts)
 
 	logger.V(1).Info("Updated global metrics",
-		"managedDeployments", managedCount,
+		"managedWorkloads", managedCount,
 		"activePolicies", len(policyList.Items))
 }
 

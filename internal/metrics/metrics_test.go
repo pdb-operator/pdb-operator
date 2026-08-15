@@ -94,6 +94,34 @@ func TestUpdateManagedDeployments(t *testing.T) {
 	assert.Equal(t, 3, count, "Should have 3 gauge entries")
 }
 
+func TestUpdateManagedStatefulSets(t *testing.T) {
+	UpdateManagedStatefulSets(map[string]map[string]int{
+		"default": {"standard": 2},
+	})
+	count := testutil.CollectAndCount(ManagedStatefulSets, "pdb_operator_statefulsets_managed")
+	assert.Equal(t, 1, count, "Should have 1 gauge entry")
+
+	// recount must reset stale series, not accumulate them
+	UpdateManagedStatefulSets(map[string]map[string]int{
+		"production": {"mission-critical": 1},
+	})
+	count = testutil.CollectAndCount(ManagedStatefulSets, "pdb_operator_statefulsets_managed")
+	assert.Equal(t, 1, count, "Stale series should be reset on recount")
+}
+
+func TestUpdateManagedLeaderWorkerSets(t *testing.T) {
+	UpdateManagedLeaderWorkerSets(map[string]map[string]int{
+		"default":   {"mission-critical": 4},
+		"inference": {"high-availability": 1},
+	})
+	count := testutil.CollectAndCount(ManagedLeaderWorkerSets, "pdb_operator_leaderworkersets_managed")
+	assert.Equal(t, 2, count, "Should have 2 gauge entries")
+
+	UpdateManagedLeaderWorkerSets(map[string]map[string]int{})
+	count = testutil.CollectAndCount(ManagedLeaderWorkerSets, "pdb_operator_leaderworkersets_managed")
+	assert.Equal(t, 0, count, "Empty recount should zero the gauge")
+}
+
 func TestUpdateComplianceStatus(t *testing.T) {
 	tests := []struct {
 		name       string
