@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-15
+
 ### Added
 - Group-aware PDBs for LeaderWorkerSet (`leaderworkerset.x-k8s.io/v1`): multi-host inference workloads restart in gangs, so `minAvailable` is quantized to whole groups (`ceil(class% x replicas)` clamped to `replicas - 1`, times `size`). Single-group sets get no PDB plus a Warning event instead of a budget that would permanently block node drains; `size: 1` keeps plain pod-level semantics. The StatefulSet controller now skips LWS-internal StatefulSets (leader and per-group workers, detected by the `leaderworkerset.sigs.k8s.io/name` label) so a workload never matches multiple PDBs, which would make the eviction API fail outright. Support activates only when the LWS CRD is installed (#81)
 
