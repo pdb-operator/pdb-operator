@@ -342,6 +342,23 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "StatefulSet")
 		os.Exit(1)
 	}
+	// Register LeaderWorkerSet controller only when the CRD is installed
+	if checkLeaderWorkerSetAvailable(mgr.GetConfig()) {
+		if err := (&pdbcontroller.LeaderWorkerSetReconciler{
+			Client:      circuitBreakerClient,
+			Scheme:      mgr.GetScheme(),
+			Recorder:    mgr.GetEventRecorder("leaderworkerset-controller"),
+			Events:      eventRecorder,
+			PolicyCache: policyCache,
+			Config:      sharedConfig,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "LeaderWorkerSet")
+			os.Exit(1)
+		}
+		setupLog.Info("LeaderWorkerSet support enabled")
+	} else {
+		setupLog.Info("LeaderWorkerSet CRD not found - group-aware PDB support disabled")
+	}
 
 	// Setup webhooks if enabled (with graceful fallback)
 	if enableWebhook {
@@ -623,6 +640,32 @@ func getWatchNamespaceDisplay(namespace string) string {
 		return "all"
 	}
 	return namespace
+}
+
+// checkLeaderWorkerSetAvailable checks if the LeaderWorkerSet CRD is served by the API.
+func checkLeaderWorkerSetAvailable(config *rest.Config) bool {
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		setupLog.V(1).Info("leaderworkerset check: failed to create API client",
+			"error", err.Error())
+		return false
+	}
+
+	resources, err := clientset.Discovery().ServerResourcesForGroupVersion(
+		pdbcontroller.LWSGroup + "/" + pdbcontroller.LWSVersion)
+	if err != nil {
+		setupLog.V(1).Info("leaderworkerset check: group version not served",
+			"groupVersion", pdbcontroller.LWSGroup+"/"+pdbcontroller.LWSVersion,
+			"error", err.Error())
+		return false
+	}
+
+	for _, r := range resources.APIResources {
+		if r.Kind == "LeaderWorkerSet" {
+			return true
+		}
+	}
+	return false
 }
 
 // checkCertManagerAvailable checks if cert-manager has provisioned the webhook certificate.

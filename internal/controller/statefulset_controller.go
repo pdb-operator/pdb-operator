@@ -143,6 +143,28 @@ func (r *StatefulSetReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
+	// LWS-internal StatefulSets (leader + per-group workers) are disruption-managed at the LeaderWorkerSet level
+	if _, partOfLWS := sts.Labels[LWSSetNameLabelKey]; partOfLWS {
+		logger.Info("StatefulSet belongs to a LeaderWorkerSet, skipping PDB management", map[string]any{})
+		tracing.AddEvent(ctx, "SkippedPDB", attribute.String("reason", "leaderworkerset_managed"))
+		r.tracker.ClearState(w)
+		if err := CleanupPDB(ctx, r.Client, r.Events, w, logger.ToLogr()); err != nil {
+			reconcileErr = err
+			logger.Error(err, "Failed to clean up PDB for LWS-managed StatefulSet", map[string]any{})
+			return ctrl.Result{RequeueAfter: DefaultRequeueDelay}, err
+		}
+		if controllerutil.ContainsFinalizer(sts, FinalizerPDBCleanup) {
+			patch := client.MergeFrom(sts.DeepCopy())
+			controllerutil.RemoveFinalizer(sts, FinalizerPDBCleanup)
+			if err := r.Patch(ctx, sts, patch); err != nil {
+				reconcileErr = err
+				logger.Error(err, "Failed to remove finalizer from LWS-managed StatefulSet", map[string]any{})
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
 	if w.GetReplicas() < 2 {
 		logger.Info("Single replica, no PDB required", map[string]any{"replicas": w.GetReplicas()})
 		tracing.AddEvent(ctx, "SkippedPDB",
