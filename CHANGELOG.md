@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Bumped Go to 1.26.6 to resolve six standard library vulnerabilities reported by govulncheck: GO-2026-6218 (`net/url`), GO-2026-6091 (`html/template`), GO-2026-6090 (`crypto/tls`), GO-2026-6089 and GO-2026-5026 (`net/http`), GO-2026-5972 (`encoding/asn1`) (#79)
+
 ## [0.3.1] - 2026-07-11
 
 ### Changed
