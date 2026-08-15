@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `pdb_operator_statefulsets_managed` and `pdb_operator_leaderworkersets_managed` now report real counts: the periodic metrics updater only recounted Deployments, so both gauges acted as sticky "seen once" flags and never dropped on deletion. The updater now recounts all three kinds each tick, excludes LWS-internal StatefulSets, and skips the LeaderWorkerSet list entirely when the CRD is absent (#85)
+
 ## [0.4.0] - 2026-08-15
 
 ### Added
