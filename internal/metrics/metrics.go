@@ -95,6 +95,14 @@ var (
 		[]string{"namespace", "availability_class"},
 	)
 
+	ManagedWorkloads = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "pdb_operator_workloads_managed",
+			Help: "Current number of scheduling.k8s.io Workloads being managed",
+		},
+		[]string{"namespace", "availability_class"},
+	)
+
 	PDBComplianceStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "pdb_operator_compliance_status",
@@ -252,6 +260,7 @@ func init() {
 		ManagedDeployments,
 		ManagedStatefulSets,
 		ManagedLeaderWorkerSets,
+		ManagedWorkloads,
 		PDBComplianceStatus,
 		AvailabilityPoliciesActive,
 		MaintenanceWindowActive,
@@ -322,6 +331,15 @@ func UpdateManagedLeaderWorkerSets(counts map[string]map[string]int) {
 	for namespace, classCounts := range counts {
 		for class, count := range classCounts {
 			ManagedLeaderWorkerSets.WithLabelValues(namespace, class).Set(float64(count))
+		}
+	}
+}
+
+func UpdateManagedWorkloads(counts map[string]map[string]int) {
+	ManagedWorkloads.Reset()
+	for namespace, classCounts := range counts {
+		for class, count := range classCounts {
+			ManagedWorkloads.WithLabelValues(namespace, class).Set(float64(count))
 		}
 	}
 }

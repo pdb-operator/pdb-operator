@@ -189,6 +189,21 @@ Special cases:
 
 The PDB selects on the `leaderworkerset.sigs.k8s.io/name` label, covering leader and worker pods. LWS implements each set as a leader StatefulSet plus per-group worker StatefulSets; the operator's StatefulSet controller skips those (same label) so pods never match more than one PDB, which would make the eviction API reject every eviction.
 
+## Gang-Aware PDBs from the Workload API (Kubernetes 1.35+)
+
+When the cluster serves the upstream Workload API (`scheduling.k8s.io/v1beta1`, [KEP-4671](https://github.com/kubernetes/enhancements/blob/master/keps/sig-scheduling/4671-gang-scheduling/README.md), beta in Kubernetes 1.37 behind the `GenericWorkload` feature gate), the operator also manages PDBs for gang-scheduled workloads declared through it. Support is detected at startup; without the API the operator runs unchanged. Upstream gang scheduling is placement-only, and `disruptionMode` is consumed only by scheduler preemption, so voluntary evictions (node drains) are otherwise unprotected.
+
+| Declared shape | PDB behavior |
+|----------------|--------------|
+| `gang` policy with `disruptionMode: {all: {}}` | The group restarts as a unit, so the budget is quantized to whole pod groups (same math as LeaderWorkerSet) |
+| `gang` policy with `disruptionMode: {single: {}}` (or unset) | Pod-level semantics with `minAvailable` floored at the gang `minCount` |
+| Single all-mode group, or a `minCount` that leaves no pod evictable | No PDB; a Warning event explains why (any budget would permanently block drains) |
+| Multiple gang templates or composite templates | Skipped for now, with a Warning event |
+
+Pods reference their group via `spec.schedulingGroup.podGroupName`, which is not a label, so the PDB selector is derived from the labels common to the group's pods and validated to match exactly those pods. Until pods exist, or when no exact selector can be derived, no PDB is created and a Warning explains why. Pods already covered by a native gang path (the LWS label) are left to that path.
+
+The availability class is resolved on the `Workload` object itself: `PDBPolicy` selectors match its labels, and the `pdboperator.io/*` annotations work the same as on any other workload.
+
 ## Enforcement Modes
 
 | Mode | Behavior |
@@ -242,6 +257,7 @@ spec:
 | `pdb_operator_pdbs_deleted_total` | Counter | PDBs deleted |
 | `pdb_operator_deployments_managed` | Gauge | Managed deployments per namespace/class |
 | `pdb_operator_leaderworkersets_managed` | Gauge | Managed LeaderWorkerSets per namespace/class |
+| `pdb_operator_workloads_managed` | Gauge | Managed scheduling.k8s.io Workloads per namespace/class |
 | `pdb_operator_policies_active` | Gauge | Active policies per namespace |
 | `pdb_operator_compliance_status` | Gauge | Deployment compliance status |
 | `pdb_operator_maintenance_window_active` | Gauge | Maintenance window active |

@@ -362,6 +362,25 @@ func main() {
 		setupLog.Info("LeaderWorkerSet CRD not found - group-aware PDB support disabled")
 	}
 
+	// Register the Workload API controller only when scheduling.k8s.io/v1beta1 serves it
+	workloadAPIEnabled := checkWorkloadAPIAvailable(mgr.GetConfig())
+	if workloadAPIEnabled {
+		if err := (&pdbcontroller.WorkloadAPIReconciler{
+			Client:      circuitBreakerClient,
+			Scheme:      mgr.GetScheme(),
+			Recorder:    mgr.GetEventRecorder("workload-controller"),
+			Events:      eventRecorder,
+			PolicyCache: policyCache,
+			Config:      sharedConfig,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "Workload")
+			os.Exit(1)
+		}
+		setupLog.Info("Workload API support enabled")
+	} else {
+		setupLog.Info("Workload API (scheduling.k8s.io/v1beta1) not served - gang-aware PDB support for it disabled")
+	}
+
 	// Setup webhooks if enabled (with graceful fallback)
 	if enableWebhook {
 		certManagerAvailable := checkCertManagerAvailable(mgr.GetConfig())
@@ -473,7 +492,7 @@ func main() {
 	case synced := <-cacheSynced:
 		if synced {
 			setupLog.Info("Cache synced, starting metrics updater")
-			go startMetricsUpdater(bgCtx, circuitBreakerClient, policyCache, lwsEnabled)
+			go startMetricsUpdater(bgCtx, circuitBreakerClient, policyCache, lwsEnabled, workloadAPIEnabled)
 		} else {
 			setupLog.Error(nil, "Failed to sync cache, metrics updater will not start")
 		}
@@ -534,7 +553,8 @@ func (gsm *GracefulShutdownManager) runPreShutdownHooks(ctx context.Context) {
 }
 
 // startMetricsUpdater periodically updates global metrics
-func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.PolicyCache, lwsEnabled bool) {
+func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.PolicyCache,
+	lwsEnabled, workloadAPIEnabled bool) {
 	select {
 	case <-time.After(5 * time.Second):
 	case <-ctx.Done():
@@ -552,7 +572,7 @@ func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.
 		}()
 
 		if c != nil {
-			updateGlobalMetrics(ctx, c, lwsEnabled)
+			updateGlobalMetrics(ctx, c, lwsEnabled, workloadAPIEnabled)
 		}
 		if pCache != nil {
 			metrics.UpdateCacheMetrics(pCache.GetStats())
@@ -585,7 +605,7 @@ func countByClass(counts map[string]map[string]int, namespace string, annotation
 	return true
 }
 
-func updateGlobalMetrics(ctx context.Context, c client.Client, lwsEnabled bool) {
+func updateGlobalMetrics(ctx context.Context, c client.Client, lwsEnabled, workloadAPIEnabled bool) {
 	ctx = logging.WithCorrelationID(ctx)
 	ctx = logging.WithOperation(ctx, "metrics-update")
 
@@ -643,6 +663,24 @@ func updateGlobalMetrics(ctx context.Context, c client.Client, lwsEnabled bool) 
 		}
 
 		metrics.UpdateManagedLeaderWorkerSets(lwsCounts)
+	}
+
+	if workloadAPIEnabled {
+		wList := &unstructured.UnstructuredList{}
+		wList.SetGroupVersionKind(pdbcontroller.WorkloadGVK.GroupVersion().WithKind(pdbcontroller.WorkloadGVK.Kind + "List"))
+		if err := c.List(ctx, wList); err != nil {
+			logger.Error(err, "Failed to list workloads for metrics")
+			return
+		}
+
+		workloadCounts := make(map[string]map[string]int)
+		for i := range wList.Items {
+			if countByClass(workloadCounts, wList.Items[i].GetNamespace(), wList.Items[i].GetAnnotations()) {
+				managedCount++
+			}
+		}
+
+		metrics.UpdateManagedWorkloads(workloadCounts)
 	}
 
 	policyList := &availabilityv1alpha1.PDBPolicyList{}
@@ -711,6 +749,36 @@ func checkLeaderWorkerSetAvailable(config *rest.Config) bool {
 		}
 	}
 	return false
+}
+
+// checkWorkloadAPIAvailable checks if the cluster serves the Workload API (KEP-4671).
+func checkWorkloadAPIAvailable(config *rest.Config) bool {
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		setupLog.V(1).Info("workload API check: failed to create API client",
+			"error", err.Error())
+		return false
+	}
+
+	resources, err := clientset.Discovery().ServerResourcesForGroupVersion(
+		pdbcontroller.WorkloadAPIGroup + "/" + pdbcontroller.WorkloadAPIVersion)
+	if err != nil {
+		setupLog.V(1).Info("workload API check: group version not served",
+			"groupVersion", pdbcontroller.WorkloadAPIGroup+"/"+pdbcontroller.WorkloadAPIVersion,
+			"error", err.Error())
+		return false
+	}
+
+	hasWorkload, hasPodGroup := false, false
+	for _, r := range resources.APIResources {
+		switch r.Kind {
+		case "Workload":
+			hasWorkload = true
+		case "PodGroup":
+			hasPodGroup = true
+		}
+	}
+	return hasWorkload && hasPodGroup
 }
 
 // checkCertManagerAvailable checks if cert-manager has provisioned the webhook certificate.
