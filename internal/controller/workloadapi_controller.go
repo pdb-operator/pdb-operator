@@ -271,71 +271,10 @@ func (r *WorkloadAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	gangs, total, composite := parseGangTemplates(workload)
-	if len(gangs) == 0 {
-		// basic-only workloads are owned by the pod-owning controller's native path
-		logger.Info("No gang pod group templates, skipping", map[string]any{"templates": total})
-		return ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
-	}
-	if len(gangs) > 1 || composite > 0 {
-		r.warnSkip(w, "Workload %s has multiple or composite gang templates, not yet supported", w.GetName())
-		return ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
-	}
-	gang := gangs[0]
-
-	groups, groupPods, err := r.collectTemplatePods(ctx, w.GetNamespace(), w.GetName(), gang.Name)
-	if err != nil {
+	in, done, res, err := r.prepareGangInput(ctx, w, logger)
+	if done || err != nil {
 		reconcileErr = err
-		logger.Error(err, "Failed to collect pod groups", map[string]any{})
-		return ctrl.Result{}, err
-	}
-
-	if len(groupPods) == 0 {
-		r.warnSkip(w, "No pods for Workload %s yet; PDB deferred until its pod groups have pods", w.GetName())
-		if err := r.cleanupQuietly(ctx, w, logger); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: workloadPodsPollDelay}, nil
-	}
-
-	for i := range groupPods {
-		// pods with a native gang path (today: LWS) already have a group-aware PDB
-		if _, owned := groupPods[i].Labels[LWSSetNameLabelKey]; owned {
-			logger.Info("Pods are managed by a native gang path, skipping", map[string]any{})
-			return ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
-		}
-	}
-
-	allPods := &corev1.PodList{}
-	if err := r.List(ctx, allPods, client.InNamespace(w.GetNamespace())); err != nil {
-		reconcileErr = err
-		return ctrl.Result{}, err
-	}
-	selectorLabels := deriveGroupSelector(groupPods, allPods.Items)
-	if selectorLabels == nil {
-		r.warnSkip(w, "No exact label selector derivable for Workload %s pods; cannot create a safe PDB", w.GetName())
-		if err := r.cleanupQuietly(ctx, w, logger); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: workloadPodsPollDelay}, nil
-	}
-	w.selector = &metav1.LabelSelector{MatchLabels: selectorLabels}
-	w.pods = int32(len(groupPods))
-
-	maxGroupSize := int32(0)
-	for _, pods := range groups {
-		if int32(len(pods)) > maxGroupSize {
-			maxGroupSize = int32(len(pods))
-		}
-	}
-
-	if gang.DisruptAll && len(groups) < 2 {
-		// a single all-mode group has no valid PDB: any budget permanently blocks drains
-		r.warnSkip(w,
-			"No PDB created for %s: a single pod group with disruptionMode all restarts as a unit, so any PDB would permanently block node drains",
-			w.GetName())
-		metrics.UpdateComplianceStatus(w.GetNamespace(), w.GetName(), false, "single_group")
-		return ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
+		return res, err
 	}
 
 	tracing.AddEvent(ctx, "EvaluatingPolicies")
@@ -356,20 +295,8 @@ func (r *WorkloadAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	if gang.DisruptAll {
-		// the whole group restarts together, so quantize the budget to whole groups
-		config.MinAvailable = QuantizeMinAvailableForGroups(config.MinAvailable, int32(len(groups)), maxGroupSize)
-	} else if len(groups) == 1 {
-		// a single independently-disrupted gang keeps pod semantics floored at minCount
-		floored, ok := floorAtMinCount(config.MinAvailable, gang.MinCount, w.pods)
-		if !ok {
-			r.warnSkip(w,
-				"No PDB created for %s: gang minCount %d leaves no pod evictable, so any PDB would permanently block node drains",
-				w.GetName(), gang.MinCount)
-			metrics.UpdateComplianceStatus(w.GetNamespace(), w.GetName(), false, "min_count_blocks_drains")
-			return ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
-		}
-		config.MinAvailable = floored
+	if !r.applyGangBudget(config, in, w) {
+		return ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
 	}
 
 	// add the finalizer before the state-change guard so an out-of-band removal is always restored
@@ -441,6 +368,107 @@ func (r *WorkloadAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	})
 
 	return applyMaintenanceRequeue(result, config, r.now()), nil
+}
+
+// gangReconcileInput is the gang shape Reconcile derives from templates, pod groups, and pods.
+type gangReconcileInput struct {
+	gang         gangTemplate
+	groupCount   int32
+	maxGroupSize int32
+}
+
+// prepareGangInput parses the gang shape and derives the pod-based selector onto w.
+// done=true means Reconcile should return res immediately.
+func (r *WorkloadAPIReconciler) prepareGangInput(ctx context.Context, w *workloadAPIObject,
+	logger *logging.UnifiedLogger) (in gangReconcileInput, done bool, res ctrl.Result, err error) {
+	gangs, total, composite := parseGangTemplates(w.Unstructured)
+	if len(gangs) == 0 {
+		// basic-only workloads are owned by the pod-owning controller's native path
+		logger.Info("No gang pod group templates, skipping", map[string]any{"templates": total})
+		return in, true, ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
+	}
+	if len(gangs) > 1 || composite > 0 {
+		r.warnSkip(w, "Workload %s has multiple or composite gang templates, not yet supported", w.GetName())
+		return in, true, ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
+	}
+	in.gang = gangs[0]
+
+	groups, groupPods, err := r.collectTemplatePods(ctx, w.GetNamespace(), w.GetName(), in.gang.Name)
+	if err != nil {
+		logger.Error(err, "Failed to collect pod groups", map[string]any{})
+		return in, true, ctrl.Result{}, err
+	}
+
+	if len(groupPods) == 0 {
+		r.warnSkip(w, "No pods for Workload %s yet; PDB deferred until its pod groups have pods", w.GetName())
+		if err := r.cleanupQuietly(ctx, w, logger); err != nil {
+			return in, true, ctrl.Result{}, err
+		}
+		return in, true, ctrl.Result{RequeueAfter: workloadPodsPollDelay}, nil
+	}
+
+	for i := range groupPods {
+		// pods with a native gang path (today: LWS) already have a group-aware PDB
+		if _, owned := groupPods[i].Labels[LWSSetNameLabelKey]; owned {
+			logger.Info("Pods are managed by a native gang path, skipping", map[string]any{})
+			return in, true, ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
+		}
+	}
+
+	allPods := &corev1.PodList{}
+	if err := r.List(ctx, allPods, client.InNamespace(w.GetNamespace())); err != nil {
+		return in, true, ctrl.Result{}, err
+	}
+	selectorLabels := deriveGroupSelector(groupPods, allPods.Items)
+	if selectorLabels == nil {
+		r.warnSkip(w, "No exact label selector derivable for Workload %s pods; cannot create a safe PDB", w.GetName())
+		if err := r.cleanupQuietly(ctx, w, logger); err != nil {
+			return in, true, ctrl.Result{}, err
+		}
+		return in, true, ctrl.Result{RequeueAfter: workloadPodsPollDelay}, nil
+	}
+	w.selector = &metav1.LabelSelector{MatchLabels: selectorLabels}
+	w.pods = int32(len(groupPods))
+
+	in.groupCount = int32(len(groups))
+	for _, pods := range groups {
+		if int32(len(pods)) > in.maxGroupSize {
+			in.maxGroupSize = int32(len(pods))
+		}
+	}
+
+	if in.gang.DisruptAll && in.groupCount < 2 {
+		// a single all-mode group has no valid PDB: any budget permanently blocks drains
+		r.warnSkip(w,
+			"No PDB created for %s: a single pod group with disruptionMode all restarts as a unit, so any PDB would permanently block node drains",
+			w.GetName())
+		metrics.UpdateComplianceStatus(w.GetNamespace(), w.GetName(), false, "single_group")
+		return in, true, ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
+	}
+	return in, false, ctrl.Result{}, nil
+}
+
+// applyGangBudget rewrites config.MinAvailable for the gang shape; false means no valid PDB exists.
+func (r *WorkloadAPIReconciler) applyGangBudget(config *AvailabilityConfig, in gangReconcileInput, w *workloadAPIObject) bool {
+	if in.gang.DisruptAll {
+		// the whole group restarts together, so quantize the budget to whole groups
+		config.MinAvailable = QuantizeMinAvailableForGroups(config.MinAvailable, in.groupCount, in.maxGroupSize)
+		return true
+	}
+	if in.groupCount != 1 {
+		return true
+	}
+	// a single independently-disrupted gang keeps pod semantics floored at minCount
+	floored, ok := floorAtMinCount(config.MinAvailable, in.gang.MinCount, w.pods)
+	if !ok {
+		r.warnSkip(w,
+			"No PDB created for %s: gang minCount %d leaves no pod evictable, so any PDB would permanently block node drains",
+			w.GetName(), in.gang.MinCount)
+		metrics.UpdateComplianceStatus(w.GetNamespace(), w.GetName(), false, "min_count_blocks_drains")
+		return false
+	}
+	config.MinAvailable = floored
+	return true
 }
 
 // floorAtMinCount resolves minAvailable to an absolute pod count no lower than minCount.
@@ -536,7 +564,19 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 		return err
 	}
 
-	workloadPredicate := predicate.Funcs{
+	return ctrl.NewControllerManagedBy(mgr).
+		Named("workload-pdb").
+		For(NewWorkloadObject(), builder.WithPredicates(workloadChangePredicate())).
+		Watches(NewPodGroupObject(), podGroupToWorkloadHandler()).
+		Watches(&corev1.Pod{}, r.podToWorkloadHandler(), builder.WithPredicates(groupPodPredicate())).
+		Watches(&policyv1.PodDisruptionBudget{}, workloadPDBHandler(), builder.WithPredicates(managedWorkloadPDBPredicate())).
+		Watches(&availabilityv1alpha1.PDBPolicy{}, r.policyToWorkloadsHandler()).
+		WithOptions(opts).
+		Complete(r)
+}
+
+func workloadChangePredicate() predicate.Funcs {
+	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool { return isWorkloadObject(e.Object) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			if !isWorkloadObject(e.ObjectOld) || !isWorkloadObject(e.ObjectNew) {
@@ -550,8 +590,10 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 		DeleteFunc:  func(e event.DeleteEvent) bool { return true },
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
+}
 
-	podGroupHandler := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
+func podGroupToWorkloadHandler() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
 		u, ok := obj.(*unstructured.Unstructured)
 		if !ok {
 			return nil
@@ -564,8 +606,10 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 			NamespacedName: types.NamespacedName{Name: wName, Namespace: u.GetNamespace()},
 		}}
 	})
+}
 
-	podHandler := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
+func (r *WorkloadAPIReconciler) podToWorkloadHandler() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
 		pod, ok := obj.(*corev1.Pod)
 		if !ok || pod.Spec.SchedulingGroup == nil || pod.Spec.SchedulingGroup.PodGroupName == nil {
 			return nil
@@ -583,8 +627,10 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 			NamespacedName: types.NamespacedName{Name: wName, Namespace: pod.Namespace},
 		}}
 	})
+}
 
-	podPredicate := predicate.Funcs{
+func groupPodPredicate() predicate.Funcs {
+	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool { return podInSchedulingGroup(e.Object) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			if !podInSchedulingGroup(e.ObjectNew) {
@@ -596,8 +642,10 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 		DeleteFunc:  func(e event.DeleteEvent) bool { return podInSchedulingGroup(e.Object) },
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
+}
 
-	pdbHandler := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
+func workloadPDBHandler() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
 		pdb, ok := obj.(*policyv1.PodDisruptionBudget)
 		if !ok {
 			return nil
@@ -613,8 +661,10 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 			NamespacedName: types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace},
 		}}
 	})
+}
 
-	pdbPredicate := predicate.Funcs{
+func managedWorkloadPDBPredicate() predicate.Funcs {
+	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool { return false },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			pdb, ok := e.ObjectNew.(*policyv1.PodDisruptionBudget)
@@ -639,8 +689,10 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 		},
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
+}
 
-	policyHandler := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
+func (r *WorkloadAPIReconciler) policyToWorkloadsHandler() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
 		policy, ok := obj.(*availabilityv1alpha1.PDBPolicy)
 		if !ok {
 			return nil
@@ -662,16 +714,6 @@ func (r *WorkloadAPIReconciler) SetupWithManagerWithOptions(mgr ctrl.Manager, op
 		}
 		return requests
 	})
-
-	return ctrl.NewControllerManagedBy(mgr).
-		Named("workload-pdb").
-		For(NewWorkloadObject(), builder.WithPredicates(workloadPredicate)).
-		Watches(NewPodGroupObject(), podGroupHandler).
-		Watches(&corev1.Pod{}, podHandler, builder.WithPredicates(podPredicate)).
-		Watches(&policyv1.PodDisruptionBudget{}, pdbHandler, builder.WithPredicates(pdbPredicate)).
-		Watches(&availabilityv1alpha1.PDBPolicy{}, policyHandler).
-		WithOptions(opts).
-		Complete(r)
 }
 
 func isWorkloadObject(obj client.Object) bool {

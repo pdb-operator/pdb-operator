@@ -553,7 +553,8 @@ func (gsm *GracefulShutdownManager) runPreShutdownHooks(ctx context.Context) {
 }
 
 // startMetricsUpdater periodically updates global metrics
-func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.PolicyCache, lwsEnabled, workloadAPIEnabled bool) {
+func startMetricsUpdater(ctx context.Context, c client.Client, pCache *pdbcache.PolicyCache,
+	lwsEnabled, workloadAPIEnabled bool) {
 	select {
 	case <-time.After(5 * time.Second):
 	case <-ctx.Done():
