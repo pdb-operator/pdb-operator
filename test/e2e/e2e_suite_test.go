@@ -33,9 +33,14 @@ var (
 	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
 	// These variables are useful if CertManager is already installed, avoiding
 	// re-installation and conflicts.
+	// - LWS_INSTALL_SKIP=true: Skips LeaderWorkerSet installation during test setup.
 	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
+
+	skipLWSInstall = os.Getenv("LWS_INSTALL_SKIP") == "true"
+	// isLWSAlreadyInstalled will be set true when the LeaderWorkerSet CRD is found on the cluster
+	isLWSAlreadyInstalled = false
 
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
@@ -78,6 +83,18 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
+
+	// LWS must exist before the manager deploys: LWS support is detected at startup
+	if !skipLWSInstall {
+		By("checking if LeaderWorkerSet is installed already")
+		isLWSAlreadyInstalled = utils.IsLWSCRDsInstalled()
+		if !isLWSAlreadyInstalled {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Installing LeaderWorkerSet...\n")
+			Expect(utils.InstallLWS()).To(Succeed(), "Failed to install LeaderWorkerSet")
+		} else {
+			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: LeaderWorkerSet is already installed. Skipping installation...\n")
+		}
+	}
 })
 
 var _ = AfterSuite(func() {
@@ -85,5 +102,11 @@ var _ = AfterSuite(func() {
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
 		utils.UninstallCertManager()
+	}
+
+	// Teardown LWS after the suite if not skipped and if it was not already installed
+	if !skipLWSInstall && !isLWSAlreadyInstalled {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling LeaderWorkerSet...\n")
+		utils.UninstallLWS()
 	}
 })

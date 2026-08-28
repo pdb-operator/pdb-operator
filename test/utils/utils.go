@@ -35,6 +35,9 @@ const (
 
 	certmanagerVersion = "v1.16.3"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
+
+	lwsVersion = "v0.10.0"
+	lwsURLTmpl = "https://github.com/kubernetes-sigs/lws/releases/download/%s/manifests.yaml"
 )
 
 func warnError(err error) {
@@ -146,6 +149,39 @@ func InstallCertManager() error {
 		time.Sleep(5 * time.Second)
 	}
 	return fmt.Errorf("timed out waiting for cert-manager CA bundle to be injected")
+}
+
+// InstallLWS installs the LeaderWorkerSet operator and waits for its controller.
+func InstallLWS() error {
+	url := fmt.Sprintf(lwsURLTmpl, lwsVersion)
+	// server-side apply: the LWS CRD schema exceeds the client-side annotation limit
+	cmd := exec.Command("kubectl", "apply", "--server-side", "-f", url)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+	cmd = exec.Command("kubectl", "wait", "deployment.apps/lws-controller-manager",
+		"--for", "condition=Available",
+		"--namespace", "lws-system",
+		"--timeout", "5m",
+	)
+	_, err := Run(cmd)
+	return err
+}
+
+// UninstallLWS uninstalls the LeaderWorkerSet operator bundle.
+func UninstallLWS() {
+	url := fmt.Sprintf(lwsURLTmpl, lwsVersion)
+	cmd := exec.Command("kubectl", "delete", "-f", url)
+	if _, err := Run(cmd); err != nil {
+		warnError(err)
+	}
+}
+
+// IsLWSCRDsInstalled checks if the LeaderWorkerSet CRD is present.
+func IsLWSCRDsInstalled() bool {
+	cmd := exec.Command("kubectl", "get", "crd", "leaderworkersets.leaderworkerset.x-k8s.io")
+	_, err := Run(cmd)
+	return err == nil
 }
 
 // IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed

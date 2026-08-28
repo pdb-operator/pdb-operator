@@ -99,6 +99,11 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
+		By("deleting LeaderWorkerSets while the operator can still process their finalizers")
+		cmd = exec.Command("kubectl", "delete", "leaderworkersets", "--all", "-n", "default",
+			"--ignore-not-found", "--timeout=60s")
+		_, _ = utils.Run(cmd)
+
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
@@ -728,6 +733,279 @@ spec:
 			cleanupDeployment(deployName)
 			DeferCleanup(func() { cleanupDeployment(deployName) })
 			verifyScaleDownCleansUpPDB("Deployment", "deployment", deployName, testNamespace)
+		})
+	})
+
+	Context("LeaderWorkerSet PDB management", func() {
+		const testNamespace = "default"
+		const lwsNameLabel = "leaderworkerset.sigs.k8s.io/name"
+		const lwsGroupLabel = "leaderworkerset.sigs.k8s.io/group-index"
+
+		// dedent strips leading tabs from YAML heredocs so kubectl can parse them.
+		dedent := func(s string) string {
+			return strings.ReplaceAll(s, "\t", "")
+		}
+
+		// cleanupLWS removes a LeaderWorkerSet, its PDB, and its policy; idempotent.
+		// The LWS delete blocks so the operator can process the PDB-cleanup finalizer.
+		cleanupLWS := func(name string) {
+			cmd := exec.Command("kubectl", "delete", "leaderworkerset", name, "-n", testNamespace,
+				"--ignore-not-found", "--timeout=60s")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "pdb", name+"-pdb", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "pdbpolicy", name+"-policy", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+		}
+
+		// evictPod issues a policy/v1 Eviction through the API server.
+		evictPod := func(podName string) (string, error) {
+			eviction := fmt.Sprintf(
+				`{"apiVersion":"policy/v1","kind":"Eviction","metadata":{"name":%q,"namespace":%q}}`,
+				podName, testNamespace)
+			cmd := exec.Command("kubectl", "create", "--raw",
+				fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/eviction", testNamespace, podName),
+				"-f", "-")
+			cmd.Stdin = strings.NewReader(eviction)
+			return utils.Run(cmd)
+		}
+
+		// readyStatuses returns the Ready condition status of every pod of the LWS.
+		readyStatuses := func(g Gomega, name string) []string {
+			cmd := exec.Command("kubectl", "get", "pods",
+				"-l", lwsNameLabel+"="+name, "-n", testNamespace,
+				"-o", "jsonpath={.items[*].status.conditions[?(@.type==\"Ready\")].status}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			return strings.Fields(output)
+		}
+
+		waitAllPodsReady := func(name string, count int) {
+			Eventually(func(g Gomega) {
+				statuses := readyStatuses(g, name)
+				g.Expect(statuses).To(HaveLen(count))
+				for _, s := range statuses {
+					g.Expect(s).To(Equal("True"))
+				}
+			}, 5*time.Minute).Should(Succeed())
+		}
+
+		disruptionsAllowed := func(g Gomega, name string) string {
+			cmd := exec.Command("kubectl", "get", "pdb", name+"-pdb", "-n", testNamespace,
+				"-o", "jsonpath={.status.disruptionsAllowed}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			return output
+		}
+
+		It("should quantize the PDB to whole groups and gate evictions at group granularity", func() {
+			const lwsName = "e2e-lws-gang"
+			cleanupLWS(lwsName)
+			DeferCleanup(func() { cleanupLWS(lwsName) })
+
+			By("creating a mission-critical PDBPolicy selecting the LeaderWorkerSet")
+			policyYAML := fmt.Sprintf(`
+apiVersion: availability.pdboperator.io/v1alpha1
+kind: PDBPolicy
+metadata:
+  name: %s-policy
+  namespace: %s
+spec:
+  availabilityClass: mission-critical
+  enforcement: strict
+  workloadSelector:
+    matchLabels:
+      app: %s
+  priority: 100
+`, lwsName, testNamespace, lwsName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(policyYAML))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create PDBPolicy")
+
+			By("creating a LeaderWorkerSet with 4 groups of size 2 and slow-ready pods")
+			// sleep-then-touch readiness simulates model load so group recovery is observable
+			lwsYAML := fmt.Sprintf(`
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app: %s
+spec:
+  replicas: 4
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      metadata:
+        labels:
+          app: %s
+      spec:
+        terminationGracePeriodSeconds: 3
+        containers:
+        - name: model
+          image: busybox:1.37
+          command: ["sh", "-c", "sleep 15; touch /tmp/ready; sleep infinity"]
+          readinessProbe:
+            exec:
+              command: ["cat", "/tmp/ready"]
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+`, lwsName, testNamespace, lwsName, lwsName)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(lwsYAML))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create LeaderWorkerSet")
+
+			By("waiting for the group-quantized PDB")
+			// mission-critical (90%) over 4 groups: ceil(0.9*4)=4, clamped to 3 groups x 2 pods = 6
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", lwsName+"-pdb", "-n", testNamespace,
+					"-o", "jsonpath={.spec.minAvailable}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "PDB should exist")
+				g.Expect(output).To(Equal("6"), "minAvailable should be quantized to 3 groups x 2 pods")
+			}).Should(Succeed())
+
+			By("verifying the PDB selects pods by the LWS name label")
+			cmd = exec.Command("kubectl", "get", "pdb", lwsName+"-pdb", "-n", testNamespace,
+				"-o", "jsonpath={.spec.selector.matchLabels['leaderworkerset\\.sigs\\.k8s\\.io/name']}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal(lwsName))
+
+			By("verifying the StatefulSet controller created no PDBs for LWS-internal StatefulSets")
+			// the leader StatefulSet shares the LWS name, so an unskipped STS would overwrite this PDB
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", "-n", testNamespace, "-o", "name")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				var lwsPDBs []string
+				for _, line := range utils.GetNonEmptyLines(output) {
+					if strings.Contains(line, lwsName) {
+						lwsPDBs = append(lwsPDBs, line)
+					}
+				}
+				g.Expect(lwsPDBs).To(ConsistOf("poddisruptionbudget.policy/" + lwsName + "-pdb"))
+
+				cmd = exec.Command("kubectl", "get", "pdb", lwsName+"-pdb", "-n", testNamespace,
+					"-o", "jsonpath={.metadata.ownerReferences[0].kind} {.spec.minAvailable}")
+				output, err = utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("LeaderWorkerSet 6"))
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+
+			By("waiting for all 8 pods to become Ready")
+			waitAllPodsReady(lwsName, 8)
+
+			By("waiting for the PDB to allow exactly one group of disruptions")
+			Eventually(func(g Gomega) {
+				g.Expect(disruptionsAllowed(g, lwsName)).To(Equal("2"))
+			}).Should(Succeed())
+
+			By("evicting every pod of group 0 in one pass")
+			cmd = exec.Command("kubectl", "get", "pods",
+				"-l", lwsNameLabel+"="+lwsName+","+lwsGroupLabel+"=0",
+				"-n", testNamespace, "-o", "jsonpath={.items[*].metadata.name}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			groupZeroPods := strings.Fields(output)
+			Expect(groupZeroPods).To(HaveLen(2), "group 0 should have leader + 1 worker")
+			for _, pod := range groupZeroPods {
+				_, err := evictPod(pod)
+				Expect(err).NotTo(HaveOccurred(), "eviction of %s should be admitted", pod)
+			}
+
+			By("waiting for the budget to be exhausted while group 0 reloads")
+			Eventually(func(g Gomega) {
+				g.Expect(disruptionsAllowed(g, lwsName)).To(Equal("0"))
+			}, 30*time.Second).Should(Succeed())
+
+			By("asserting an eviction from another group is rejected while group 0 reloads")
+			cmd = exec.Command("kubectl", "get", "pods",
+				"-l", lwsNameLabel+"="+lwsName+","+lwsGroupLabel+"=1",
+				"-n", testNamespace, "-o", "jsonpath={.items[0].metadata.name}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			groupOnePod := strings.TrimSpace(output)
+			Expect(groupOnePod).NotTo(BeEmpty())
+			evictOutput, err := evictPod(groupOnePod)
+			Expect(err).To(HaveOccurred(), "eviction should be rejected while the budget is exhausted")
+			Expect(evictOutput).To(ContainSubstring("disruption budget"))
+
+			By("waiting for group 0 to reload and the budget to recover")
+			waitAllPodsReady(lwsName, 8)
+			Eventually(func(g Gomega) {
+				g.Expect(disruptionsAllowed(g, lwsName)).To(Equal("2"))
+			}).Should(Succeed())
+
+			By("evicting the group-1 pod now that the budget has recovered")
+			_, err = evictPod(groupOnePod)
+			Expect(err).NotTo(HaveOccurred(), "eviction should succeed after recovery")
+		})
+
+		It("should skip PDB creation for a single-group LeaderWorkerSet and emit a warning", func() {
+			const lwsName = "e2e-lws-single"
+			cleanupLWS(lwsName)
+			DeferCleanup(func() { cleanupLWS(lwsName) })
+
+			By("creating a single-group LeaderWorkerSet")
+			lwsYAML := fmt.Sprintf(`
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: %s
+  namespace: %s
+  annotations:
+    pdboperator.io/availability-class: high-availability
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    workerTemplate:
+      spec:
+        terminationGracePeriodSeconds: 3
+        containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "-c", "sleep infinity"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+`, lwsName, testNamespace)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(dedent(lwsYAML))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create single-group LeaderWorkerSet")
+
+			By("waiting for the LeaderWorkerSetSkipped warning event")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "events", "-n", testNamespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				found := false
+				for _, line := range utils.GetNonEmptyLines(output) {
+					if strings.Contains(line, "LeaderWorkerSetSkipped") && strings.Contains(line, lwsName) {
+						found = true
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected a LeaderWorkerSetSkipped event for %s", lwsName)
+			}).Should(Succeed())
+
+			By("confirming no PDB is created for the single group")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", lwsName+"-pdb", "-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "PDB should not exist for a single-group LeaderWorkerSet")
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
 		})
 	})
 })
