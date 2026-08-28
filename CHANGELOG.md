@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Gang-aware PDBs from the upstream Workload API (`scheduling.k8s.io/v1beta1`, KEP-4671, beta in Kubernetes 1.37 behind the `GenericWorkload` gate). `disruptionMode: all` templates get budgets quantized to whole pod groups (reusing the LWS math); `single` gangs keep pod semantics floored at the gang `minCount`; shapes whose budget would permanently block drains (single all-mode group, `minCount` covering every pod) get no PDB plus a Warning event. The PDB selector is derived from labels common to the group's pods and validated for exactness, since pods reference their PodGroup through `spec.schedulingGroup.podGroupName` rather than a label. Support activates only when the API is served (#95)
+
 ### Testing
 - The kind e2e suite now covers the LWS gang-disruption scenario from #81: LeaderWorkerSet v0.10.0 is installed into the test cluster, a 4x2 fixture under a `mission-critical` policy asserts the group-quantized `minAvailable: 6`, group-granular eviction gating (one group evictable, a second rejected until the first reloads), the LWS-internal StatefulSet skip, and the single-group no-PDB warning (#83)
 
