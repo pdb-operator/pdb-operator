@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Testing
+- The kind e2e suite now covers the LWS gang-disruption scenario from #81: LeaderWorkerSet v0.10.0 is installed into the test cluster, a 4x2 fixture under a `mission-critical` policy asserts the group-quantized `minAvailable: 6`, group-granular eviction gating (one group evictable, a second rejected until the first reloads), the LWS-internal StatefulSet skip, and the single-group no-PDB warning (#83)
+
 ## [0.4.1] - 2026-08-15
 
 ### Fixed
