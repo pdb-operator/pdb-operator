@@ -104,6 +104,11 @@ var _ = Describe("Manager", Ordered, func() {
 			"--ignore-not-found", "--timeout=60s")
 		_, _ = utils.Run(cmd)
 
+		By("deleting Workloads while the operator can still process their finalizers")
+		cmd = exec.Command("kubectl", "delete", "workloads", "--all", "-n", "default",
+			"--ignore-not-found", "--timeout=60s")
+		_, _ = utils.Run(cmd)
+
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
@@ -760,18 +765,6 @@ spec:
 			_, _ = utils.Run(cmd)
 		}
 
-		// evictPod issues a policy/v1 Eviction through the API server.
-		evictPod := func(podName string) (string, error) {
-			eviction := fmt.Sprintf(
-				`{"apiVersion":"policy/v1","kind":"Eviction","metadata":{"name":%q,"namespace":%q}}`,
-				podName, testNamespace)
-			cmd := exec.Command("kubectl", "create", "--raw",
-				fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/eviction", testNamespace, podName),
-				"-f", "-")
-			cmd.Stdin = strings.NewReader(eviction)
-			return utils.Run(cmd)
-		}
-
 		// readyStatuses returns the Ready condition status of every pod of the LWS.
 		readyStatuses := func(g Gomega, name string) []string {
 			cmd := exec.Command("kubectl", "get", "pods",
@@ -1008,7 +1001,229 @@ spec:
 			}, 15*time.Second, 3*time.Second).Should(Succeed())
 		})
 	})
+
+	Context("Workload API gang PDB management", func() {
+		const testNamespace = "default"
+
+		// skipUnlessWorkloadAPIServed skips the spec on clusters without scheduling.k8s.io/v1beta1.
+		skipUnlessWorkloadAPIServed := func() {
+			cmd := exec.Command("kubectl", "api-resources", "--api-group=scheduling.k8s.io", "-o", "name")
+			output, err := utils.Run(cmd)
+			if err != nil || !strings.Contains(output, "workloads.scheduling.k8s.io") {
+				Skip("Workload API (scheduling.k8s.io/v1beta1) not served on this cluster")
+			}
+		}
+
+		// cleanupWorkload removes a fixture's pods, pod groups, Workload, PDB, and policy; idempotent.
+		// The Workload delete blocks so the operator can process the PDB-cleanup finalizer.
+		cleanupWorkload := func(name string) {
+			cmd := exec.Command("kubectl", "delete", "pods", "-l", "app="+name, "-n", testNamespace,
+				"--ignore-not-found", "--wait=false", "--grace-period=0")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "workload", name, "-n", testNamespace,
+				"--ignore-not-found", "--timeout=60s")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "podgroups", "-l", "app="+name, "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "pdb", name+"-pdb", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "pdbpolicy", name+"-policy", "-n", testNamespace,
+				"--ignore-not-found", "--wait=false")
+			_, _ = utils.Run(cmd)
+		}
+
+		// gangWorkloadYAML renders a gang Workload plus its pod groups and pause pods.
+		gangWorkloadYAML := func(name string, groups, size int, annotationClass string) string {
+			var b strings.Builder
+			annotations := ""
+			if annotationClass != "" {
+				annotations = fmt.Sprintf("\n  annotations:\n    pdboperator.io/availability-class: %s", annotationClass)
+			}
+			fmt.Fprintf(&b, `apiVersion: scheduling.k8s.io/v1beta1
+kind: Workload
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app: %s%s
+spec:
+  podGroupTemplates:
+  - name: workers
+    schedulingPolicy:
+      gang:
+        minCount: %d
+    disruptionMode:
+      all: {}
+`, name, testNamespace, name, annotations, size)
+			for g := 0; g < groups; g++ {
+				pgName := fmt.Sprintf("%s-workers-%d", name, g)
+				fmt.Fprintf(&b, `---
+apiVersion: scheduling.k8s.io/v1beta1
+kind: PodGroup
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app: %s
+spec:
+  workloadRef:
+    workloadName: %s
+    templateName: workers
+  schedulingPolicy:
+    gang:
+      minCount: %d
+  disruptionMode:
+    all: {}
+`, pgName, testNamespace, name, name, size)
+				for p := 0; p < size; p++ {
+					fmt.Fprintf(&b, `---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: %s-%d
+  namespace: %s
+  labels:
+    app: %s
+spec:
+  schedulingGroup:
+    podGroupName: %s
+  containers:
+  - name: app
+    image: registry.k8s.io/pause:3.10
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+`, pgName, p, testNamespace, name, pgName)
+				}
+			}
+			return b.String()
+		}
+
+		disruptionsAllowed := func(g Gomega, name string) string {
+			cmd := exec.Command("kubectl", "get", "pdb", name+"-pdb", "-n", testNamespace,
+				"-o", "jsonpath={.status.disruptionsAllowed}")
+			output, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			return output
+		}
+
+		It("should quantize the PDB to whole pod groups and gate evictions at group granularity", func() {
+			skipUnlessWorkloadAPIServed()
+			const wName = "e2e-wapi-gang"
+			cleanupWorkload(wName)
+			DeferCleanup(func() { cleanupWorkload(wName) })
+
+			By("creating a mission-critical PDBPolicy selecting the Workload")
+			policyYAML := fmt.Sprintf(`
+apiVersion: availability.pdboperator.io/v1alpha1
+kind: PDBPolicy
+metadata:
+  name: %s-policy
+  namespace: %s
+spec:
+  availabilityClass: mission-critical
+  enforcement: strict
+  workloadSelector:
+    matchLabels:
+      app: %s
+  priority: 100
+`, wName, testNamespace, wName)
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(strings.ReplaceAll(policyYAML, "\t", ""))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create PDBPolicy")
+
+			By("creating a gang Workload with 4 pod groups of 2 pause pods")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(gangWorkloadYAML(wName, 4, 2, ""))
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create Workload fixture")
+
+			By("waiting for the group-quantized PDB derived from the pod labels")
+			// mission-critical (90%) over 4 groups: ceil(0.9*4)=4, clamped to 3 groups x 2 pods = 6
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", wName+"-pdb", "-n", testNamespace,
+					"-o", "jsonpath={.spec.minAvailable} {.spec.selector.matchLabels.app} "+
+						"{.metadata.ownerReferences[0].kind}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "PDB should exist")
+				g.Expect(output).To(Equal("6 "+wName+" Workload"),
+					"minAvailable should be quantized to 3 groups x 2 pods, selector derived from pod labels")
+			}).Should(Succeed())
+
+			By("waiting for the PDB to allow exactly one group of disruptions")
+			Eventually(func(g Gomega) {
+				g.Expect(disruptionsAllowed(g, wName)).To(Equal("2"))
+			}).Should(Succeed())
+
+			By("evicting both pods of group 0 in one pass")
+			for _, pod := range []string{wName + "-workers-0-0", wName + "-workers-0-1"} {
+				_, err := evictPod(pod)
+				Expect(err).NotTo(HaveOccurred(), "eviction of %s should be admitted", pod)
+			}
+
+			By("waiting for the budget to be exhausted")
+			Eventually(func(g Gomega) {
+				g.Expect(disruptionsAllowed(g, wName)).To(Equal("0"))
+			}, 30*time.Second).Should(Succeed())
+
+			By("asserting an eviction from another group is rejected")
+			evictOutput, err := evictPod(wName + "-workers-1-0")
+			Expect(err).To(HaveOccurred(), "eviction should be rejected while the budget is exhausted")
+			Expect(evictOutput).To(ContainSubstring("disruption budget"))
+		})
+
+		It("should skip PDB creation for a single-group Workload and emit a warning", func() {
+			skipUnlessWorkloadAPIServed()
+			const wName = "e2e-wapi-single"
+			cleanupWorkload(wName)
+			DeferCleanup(func() { cleanupWorkload(wName) })
+
+			By("creating a single-group gang Workload")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(gangWorkloadYAML(wName, 1, 2, "mission-critical"))
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create single-group Workload fixture")
+
+			By("waiting for the single-group WorkloadSkipped warning event")
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "events", "-n", testNamespace)
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				found := false
+				for _, line := range utils.GetNonEmptyLines(output) {
+					if strings.Contains(line, "WorkloadSkipped") && strings.Contains(line, wName) &&
+						strings.Contains(line, "restarts as a unit") {
+						found = true
+					}
+				}
+				g.Expect(found).To(BeTrue(), "expected a single-group WorkloadSkipped event for %s", wName)
+			}).Should(Succeed())
+
+			By("confirming no PDB is created for the single group")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "pdb", wName+"-pdb", "-n", testNamespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).To(HaveOccurred(), "PDB should not exist for a single-group Workload")
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+		})
+	})
 })
+
+// evictPod issues a policy/v1 Eviction for a pod in the default test namespace.
+func evictPod(podName string) (string, error) {
+	eviction := fmt.Sprintf(
+		`{"apiVersion":"policy/v1","kind":"Eviction","metadata":{"name":%q,"namespace":"default"}}`,
+		podName)
+	cmd := exec.Command("kubectl", "create", "--raw",
+		fmt.Sprintf("/api/v1/namespaces/default/pods/%s/eviction", podName),
+		"-f", "-")
+	cmd.Stdin = strings.NewReader(eviction)
+	return utils.Run(cmd)
+}
 
 // verifyScaleDownCleansUpPDB creates a 3-replica workload of the given kind, waits for its
 // PDB, scales it to 1, and asserts the orphaned PDB is cleaned up. kind is the API Kind
