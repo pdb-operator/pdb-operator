@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-29
+
 ### Fixed
 - Workload skip warnings after the first are no longer swallowed. The events.k8s.io correlation key ignores the event message, so every skip cause sharing the `WorkloadSkipped` reason collapsed into the first warning's series and later messages (e.g. the single-group no-PDB explanation) were discarded. Each cause now has its own reason: `WorkloadPDBDeferred` (no pods yet), `WorkloadSelectorUnresolvable`, `WorkloadUnsupported` (multi/composite templates), `WorkloadSkipped` (no valid PDB possible), and every skip also writes a log line (#99, #98)
 
