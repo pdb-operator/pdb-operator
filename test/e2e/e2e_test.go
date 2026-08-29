@@ -912,7 +912,7 @@ spec:
 			groupZeroPods := strings.Fields(output)
 			Expect(groupZeroPods).To(HaveLen(2), "group 0 should have leader + 1 worker")
 			for _, pod := range groupZeroPods {
-				_, err := evictPod(testNamespace, pod)
+				_, err := evictPod(pod)
 				Expect(err).NotTo(HaveOccurred(), "eviction of %s should be admitted", pod)
 			}
 
@@ -929,7 +929,7 @@ spec:
 			Expect(err).NotTo(HaveOccurred())
 			groupOnePod := strings.TrimSpace(output)
 			Expect(groupOnePod).NotTo(BeEmpty())
-			evictOutput, err := evictPod(testNamespace, groupOnePod)
+			evictOutput, err := evictPod(groupOnePod)
 			Expect(err).To(HaveOccurred(), "eviction should be rejected while the budget is exhausted")
 			Expect(evictOutput).To(ContainSubstring("disruption budget"))
 
@@ -940,7 +940,7 @@ spec:
 			}).Should(Succeed())
 
 			By("evicting the group-1 pod now that the budget has recovered")
-			_, err = evictPod(testNamespace, groupOnePod)
+			_, err = evictPod(groupOnePod)
 			Expect(err).NotTo(HaveOccurred(), "eviction should succeed after recovery")
 		})
 
@@ -1161,7 +1161,7 @@ spec:
 
 			By("evicting both pods of group 0 in one pass")
 			for _, pod := range []string{wName + "-workers-0-0", wName + "-workers-0-1"} {
-				_, err := evictPod(testNamespace, pod)
+				_, err := evictPod(pod)
 				Expect(err).NotTo(HaveOccurred(), "eviction of %s should be admitted", pod)
 			}
 
@@ -1171,7 +1171,7 @@ spec:
 			}, 30*time.Second).Should(Succeed())
 
 			By("asserting an eviction from another group is rejected")
-			evictOutput, err := evictPod(testNamespace, wName+"-workers-1-0")
+			evictOutput, err := evictPod(wName + "-workers-1-0")
 			Expect(err).To(HaveOccurred(), "eviction should be rejected while the budget is exhausted")
 			Expect(evictOutput).To(ContainSubstring("disruption budget"))
 		})
@@ -1213,13 +1213,13 @@ spec:
 	})
 })
 
-// evictPod issues a policy/v1 Eviction through the API server.
-func evictPod(namespace, podName string) (string, error) {
+// evictPod issues a policy/v1 Eviction for a pod in the default test namespace.
+func evictPod(podName string) (string, error) {
 	eviction := fmt.Sprintf(
-		`{"apiVersion":"policy/v1","kind":"Eviction","metadata":{"name":%q,"namespace":%q}}`,
-		podName, namespace)
+		`{"apiVersion":"policy/v1","kind":"Eviction","metadata":{"name":%q,"namespace":"default"}}`,
+		podName)
 	cmd := exec.Command("kubectl", "create", "--raw",
-		fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/eviction", namespace, podName),
+		fmt.Sprintf("/api/v1/namespaces/default/pods/%s/eviction", podName),
 		"-f", "-")
 	cmd.Stdin = strings.NewReader(eviction)
 	return utils.Run(cmd)
