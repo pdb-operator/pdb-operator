@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -399,6 +400,45 @@ func TestWorkloadAPIReconciler_ScaleToZeroGroups_CleansUpPDB(t *testing.T) {
 
 	err := r.Get(context.Background(), types.NamespacedName{Name: "shrink-pdb", Namespace: "default"}, pdb)
 	assert.Error(t, err, "PDB should be cleaned up when no pods remain")
+}
+
+// drainFakeEvents empties the fake recorder channel into a slice.
+func drainFakeEvents(r *WorkloadAPIReconciler) []string {
+	fake := r.Recorder.(*k8sevents.FakeRecorder)
+	var out []string
+	for {
+		select {
+		case e := <-fake.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}
+
+func TestWorkloadAPIReconciler_SkipReasons_DistinctPerCause(t *testing.T) {
+	workload := newTestWorkload("late-pods", 2, true,
+		map[string]string{AnnotationAvailabilityClass: "standard"}, nil)
+	pg := newTestPodGroup("late-pods-workers-0", "default", "late-pods", "workers")
+	r := newWorkloadAPITestReconciler(workload, pg)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: "late-pods", Namespace: "default"}}
+	_, err := r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	// pods appear later: same object, a second skip cause on the same reconcile key
+	for p := 0; p < 2; p++ {
+		pod := newTestGroupPod(fmt.Sprintf("late-pods-workers-0-%d", p), "default", "late-pods-workers-0",
+			map[string]string{"app": "late-pods"})
+		require.NoError(t, r.Create(context.Background(), pod))
+	}
+	_, err = r.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	// distinct reasons keep both messages visible: the events.k8s.io key ignores the note (#99)
+	events := strings.Join(drainFakeEvents(r), "\n")
+	assert.Contains(t, events, "WorkloadPDBDeferred")
+	assert.Contains(t, events, "restarts as a unit")
 }
 
 func TestWorkloadAPIReconciler_Deletion_RemovesFinalizerAndPDB(t *testing.T) {

@@ -295,7 +295,7 @@ func (r *WorkloadAPIReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	if !r.applyGangBudget(config, in, w) {
+	if !r.applyGangBudget(logger, config, in, w) {
 		return ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
 	}
 
@@ -388,7 +388,8 @@ func (r *WorkloadAPIReconciler) prepareGangInput(ctx context.Context, w *workloa
 		return in, true, ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
 	}
 	if len(gangs) > 1 || composite > 0 {
-		r.warnSkip(w, "Workload %s has multiple or composite gang templates, not yet supported", w.GetName())
+		r.warnSkip(logger, w, "WorkloadUnsupported",
+			"Workload %s has multiple or composite gang templates, not yet supported", w.GetName())
 		return in, true, ctrl.Result{}, r.cleanupQuietly(ctx, w, logger)
 	}
 	in.gang = gangs[0]
@@ -400,7 +401,8 @@ func (r *WorkloadAPIReconciler) prepareGangInput(ctx context.Context, w *workloa
 	}
 
 	if len(groupPods) == 0 {
-		r.warnSkip(w, "No pods for Workload %s yet; PDB deferred until its pod groups have pods", w.GetName())
+		r.warnSkip(logger, w, "WorkloadPDBDeferred",
+			"No pods for Workload %s yet; PDB deferred until its pod groups have pods", w.GetName())
 		if err := r.cleanupQuietly(ctx, w, logger); err != nil {
 			return in, true, ctrl.Result{}, err
 		}
@@ -421,7 +423,8 @@ func (r *WorkloadAPIReconciler) prepareGangInput(ctx context.Context, w *workloa
 	}
 	selectorLabels := deriveGroupSelector(groupPods, allPods.Items)
 	if selectorLabels == nil {
-		r.warnSkip(w, "No exact label selector derivable for Workload %s pods; cannot create a safe PDB", w.GetName())
+		r.warnSkip(logger, w, "WorkloadSelectorUnresolvable",
+			"No exact label selector derivable for Workload %s pods; cannot create a safe PDB", w.GetName())
 		if err := r.cleanupQuietly(ctx, w, logger); err != nil {
 			return in, true, ctrl.Result{}, err
 		}
@@ -439,7 +442,7 @@ func (r *WorkloadAPIReconciler) prepareGangInput(ctx context.Context, w *workloa
 
 	if in.gang.DisruptAll && in.groupCount < 2 {
 		// a single all-mode group has no valid PDB: any budget permanently blocks drains
-		r.warnSkip(w,
+		r.warnSkip(logger, w, "WorkloadSkipped",
 			"No PDB created for %s: a single pod group with disruptionMode all restarts as a unit, so any PDB would permanently block node drains",
 			w.GetName())
 		metrics.UpdateComplianceStatus(w.GetNamespace(), w.GetName(), false, "single_group")
@@ -449,7 +452,7 @@ func (r *WorkloadAPIReconciler) prepareGangInput(ctx context.Context, w *workloa
 }
 
 // applyGangBudget rewrites config.MinAvailable for the gang shape; false means no valid PDB exists.
-func (r *WorkloadAPIReconciler) applyGangBudget(config *AvailabilityConfig, in gangReconcileInput, w *workloadAPIObject) bool {
+func (r *WorkloadAPIReconciler) applyGangBudget(logger *logging.UnifiedLogger, config *AvailabilityConfig, in gangReconcileInput, w *workloadAPIObject) bool {
 	if in.gang.DisruptAll {
 		// the whole group restarts together, so quantize the budget to whole groups
 		config.MinAvailable = QuantizeMinAvailableForGroups(config.MinAvailable, in.groupCount, in.maxGroupSize)
@@ -461,7 +464,7 @@ func (r *WorkloadAPIReconciler) applyGangBudget(config *AvailabilityConfig, in g
 	// a single independently-disrupted gang keeps pod semantics floored at minCount
 	floored, ok := floorAtMinCount(config.MinAvailable, in.gang.MinCount, w.pods)
 	if !ok {
-		r.warnSkip(w,
+		r.warnSkip(logger, w, "WorkloadSkipped",
 			"No PDB created for %s: gang minCount %d leaves no pod evictable, so any PDB would permanently block node drains",
 			w.GetName(), in.gang.MinCount)
 		metrics.UpdateComplianceStatus(w.GetNamespace(), w.GetName(), false, "min_count_blocks_drains")
@@ -516,9 +519,12 @@ func (r *WorkloadAPIReconciler) collectTemplatePods(ctx context.Context, namespa
 	return groups, all, nil
 }
 
-func (r *WorkloadAPIReconciler) warnSkip(w *workloadAPIObject, format string, args ...interface{}) {
+// warnSkip logs and emits one skip warning; reason must be unique per cause,
+// because the events.k8s.io correlation key ignores the message (#99).
+func (r *WorkloadAPIReconciler) warnSkip(logger *logging.UnifiedLogger, w *workloadAPIObject, reason, format string, args ...interface{}) {
+	logger.Info(fmt.Sprintf(format, args...), map[string]any{"reason": reason})
 	if r.Events != nil {
-		r.Events.Warnf(w.Unstructured, "WorkloadSkipped", format, args...)
+		r.Events.Warnf(w.Unstructured, reason, format, args...)
 	}
 }
 
