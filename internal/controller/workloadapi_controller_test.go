@@ -72,13 +72,13 @@ func newTestPodGroup(name, namespace, workloadName, templateName string) *unstru
 }
 
 // newTestGroupPod builds a pod that references its PodGroup via spec.schedulingGroup.
-func newTestGroupPod(name, namespace, podGroupName string, labels map[string]string) *corev1.Pod {
+func newTestGroupPod(name, podGroupName string, labels map[string]string) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: "default",
 			Labels:    labels,
-			UID:       types.UID(namespace + "/" + name),
+			UID:       types.UID("default/" + name),
 		},
 		Spec: corev1.PodSpec{
 			SchedulingGroup: &corev1.PodSchedulingGroup{PodGroupName: &podGroupName},
@@ -118,7 +118,7 @@ func gangFixture(workloadName string, groups, size int, podLabels map[string]str
 		pgName := fmt.Sprintf("%s-workers-%d", workloadName, g)
 		objs = append(objs, newTestPodGroup(pgName, "default", workloadName, "workers"))
 		for p := 0; p < size; p++ {
-			objs = append(objs, newTestGroupPod(fmt.Sprintf("%s-%d", pgName, p), "default", pgName, podLabels))
+			objs = append(objs, newTestGroupPod(fmt.Sprintf("%s-%d", pgName, p), pgName, podLabels))
 		}
 	}
 	return objs
@@ -199,7 +199,7 @@ func TestDeriveGroupSelector(t *testing.T) {
 	pods := func(labels ...map[string]string) []corev1.Pod {
 		out := make([]corev1.Pod, len(labels))
 		for i, l := range labels {
-			out[i] = *newTestGroupPod(fmt.Sprintf("p%d", i), "default", "pg", l)
+			out[i] = *newTestGroupPod(fmt.Sprintf("p%d", i), "pg", l)
 		}
 		return out
 	}
@@ -224,7 +224,7 @@ func TestDeriveGroupSelector(t *testing.T) {
 
 	t.Run("over-matching candidate yields nil", func(t *testing.T) {
 		group := pods(map[string]string{"app": "trainer"}, map[string]string{"app": "trainer"})
-		stranger := *newTestGroupPod("stranger", "default", "other", map[string]string{"app": "trainer"})
+		stranger := *newTestGroupPod("stranger", "other", map[string]string{"app": "trainer"})
 		assert.Nil(t, deriveGroupSelector(group, append(group, stranger)))
 	})
 }
@@ -404,11 +404,11 @@ func TestWorkloadAPIReconciler_ScaleToZeroGroups_CleansUpPDB(t *testing.T) {
 
 // drainFakeEvents empties the fake recorder channel into a slice.
 func drainFakeEvents(r *WorkloadAPIReconciler) []string {
-	fake := r.Recorder.(*k8sevents.FakeRecorder)
+	rec := r.Recorder.(*k8sevents.FakeRecorder)
 	var out []string
 	for {
 		select {
-		case e := <-fake.Events:
+		case e := <-rec.Events:
 			out = append(out, e)
 		default:
 			return out
@@ -428,7 +428,7 @@ func TestWorkloadAPIReconciler_SkipReasons_DistinctPerCause(t *testing.T) {
 
 	// pods appear later: same object, a second skip cause on the same reconcile key
 	for p := 0; p < 2; p++ {
-		pod := newTestGroupPod(fmt.Sprintf("late-pods-workers-0-%d", p), "default", "late-pods-workers-0",
+		pod := newTestGroupPod(fmt.Sprintf("late-pods-workers-0-%d", p), "late-pods-workers-0",
 			map[string]string{"app": "late-pods"})
 		require.NoError(t, r.Create(context.Background(), pod))
 	}
@@ -436,9 +436,9 @@ func TestWorkloadAPIReconciler_SkipReasons_DistinctPerCause(t *testing.T) {
 	require.NoError(t, err)
 
 	// distinct reasons keep both messages visible: the events.k8s.io key ignores the note (#99)
-	events := strings.Join(drainFakeEvents(r), "\n")
-	assert.Contains(t, events, "WorkloadPDBDeferred")
-	assert.Contains(t, events, "restarts as a unit")
+	emitted := strings.Join(drainFakeEvents(r), "\n")
+	assert.Contains(t, emitted, "WorkloadPDBDeferred")
+	assert.Contains(t, emitted, "restarts as a unit")
 }
 
 func TestWorkloadAPIReconciler_Deletion_RemovesFinalizerAndPDB(t *testing.T) {
