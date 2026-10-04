@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-04
+
+### Security
+- Bumped `go.opentelemetry.io/otel` to v1.46.0 to resolve GO-2026-6505 in the OpenTelemetry SDK and OTLP trace exporters, and moved the semconv import to v1.43.0 to match the SDK resource schema (#119)
+- Bumped `google.golang.org/grpc` to v1.83.2 to resolve GO-2026-6348 (CVE-2026-84304), heap memory exhaustion via fragmented HTTP/2 DATA frames (#111)
+
+### Changed
+- Upgraded Kubernetes libraries to v0.37.1 and controller-runtime to v0.25.2 (#103, #109, #112, #116)
+
+### Testing
+- Bumped Ginkgo to v2.33.0 (#108, #114) and Gomega to v1.44.0 (#106, #113, #117)
+
 ## [0.5.0] - 2026-08-29
 
 ### Fixed
