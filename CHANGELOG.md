@@ -143,8 +143,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distroless container base image (`gcr.io/distroless/static:nonroot`)
 - Comprehensive test suite with 71-93% coverage across packages
 
-[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.3.1...HEAD
-[0.3.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.3.0...v0.3.1
+[Unreleased]: https://github.com/pdb-operator/pdb-operator/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/pdb-operator/pdb-operator/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/pdb-operator/pdb-operator/compare/36e42bf0a0adf380ef91b53a5f7d913a8c538f39...v0.4.0
+[0.3.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.3.0...36e42bf0a0adf380ef91b53a5f7d913a8c538f39
 [0.3.0]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pdb-operator/pdb-operator/compare/v0.2.0...v0.2.1
