@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Bumped Go to 1.26.9 and `golang.org/x/net` to v0.60.0 to resolve eleven vulnerabilities reported by govulncheck: GO-2026-6617, GO-2026-6613, GO-2026-6612, GO-2026-6611, GO-2026-6610, GO-2026-6605 and GO-2026-6603 (`net/http`, five also in `x/net`), GO-2026-6608 (`net/textproto`), GO-2026-6607 (`crypto/tls`), GO-2026-6600 and GO-2026-6599 (`html/template`) (#124)
+
 ## [0.5.1] - 2026-10-04
 
 ### Security
